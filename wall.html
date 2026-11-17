@@ -1,0 +1,695 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TermWall</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1b26; cursor: none; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// Config (the menu-bar app injects window.TERMWALL_CONFIG / TERMWALL_LOGO)
+// ---------------------------------------------------------------------------
+const ALL_EFFECTS = ["decrypt","rain","beams","matrix","slide","print","burn","expand","scatter","sweep","waves","spotlights"];
+const DEFAULTS = {
+  lines: ["TERMWALL"], font: "Helvetica Neue", fontWeight: "900",
+  logoColors: "theme", logoInvert: false, layout: "stack", style: "blocks", shadow: true,
+  background: "#1a1b26", gradient: ["#7aa2f7", "#bb9af7", "#7dcfff"], accent: "#9ece6a",
+  gradientDirection: "diagonal", size: 0.6, cellSize: 14,
+  effects: ALL_EFFECTS, holdSeconds: 8, speed: 1, fps: 30, asciiArt: ""
+};
+const C = Object.assign({}, DEFAULTS, window.TERMWALL_CONFIG || {});
+const LOGO = window.TERMWALL_LOGO || null;
+document.documentElement.style.background = C.background;
+document.body.style.background = C.background;
+
+// ---------------------------------------------------------------------------
+// Small utils
+// ---------------------------------------------------------------------------
+const R = Math.random;
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ri = (a, b) => a + Math.floor(R() * (b - a + 1));
+const pick = a => a[Math.floor(R() * a.length)];
+const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeInOut = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const easeExpo = t => t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
+
+const hex = h => {
+  h = String(h || "#000").trim().replace("#", "");
+  if (h.length === 3) h = h.split("").map(x => x + x).join("");
+  const n = parseInt(h.slice(0, 6), 16) || 0;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const css = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+
+const BG = hex(C.background), ACC = hex(C.accent), WHITE = [255, 255, 255];
+const STOPS = (Array.isArray(C.gradient) && C.gradient.length ? C.gradient : ["#ffffff"]).map(hex);
+function grad(t) {
+  t = clamp(t);
+  if (STOPS.length === 1) return STOPS[0];
+  const s = t * (STOPS.length - 1), i = Math.min(STOPS.length - 2, Math.floor(s));
+  return mix(STOPS[i], STOPS[i + 1], s - i);
+}
+const DIM = (c, k = 0.3) => mix(BG, c, k);
+const FIRE = ["#ffffff", "#fff75d", "#fe650d", "#8a003c", "#510100"].map(hex);
+function fire(t) { t = clamp(t); const s = t * (FIRE.length - 1), i = Math.min(FIRE.length - 2, Math.floor(s)); return mix(FIRE[i], FIRE[i + 1], s - i); }
+
+const GLY = "!@#$%^&*()-_=+[]{}<>?/\\|~;:0123456789ABCDEFabcdefxz".split("");
+
+// Quadrant block characters: bits TL=1 TR=2 BL=4 BR=8
+const QCHARS = [" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"];
+const QBITS = {}; QCHARS.forEach((c, i) => { if (i) QBITS[c] = i; });
+const SHADE = { "░": .28, "▒": .52, "▓": .78 };
+const EIGHTHS = { "▁": 1, "▂": 2, "▃": 3, "▅": 5, "▆": 6, "▇": 7 };
+const RAMP = " .:-=+*#%@";
+
+// ---------------------------------------------------------------------------
+// Grid + drawing
+// ---------------------------------------------------------------------------
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d", { alpha: false });
+let W, H, dpr, cw, chh, cols, rows, ox, oy, FS;
+
+function setupGrid() {
+  dpr = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  FS = Math.max(6, +C.cellSize || 14);
+  cw = Math.max(3, Math.round(FS * 0.6));
+  chh = Math.max(5, Math.round(FS * 1.2));
+  cols = Math.floor(W / cw); rows = Math.floor(H / chh);
+  ox = Math.floor((W - cols * cw) / 2); oy = Math.floor((H - rows * chh) / 2);
+  ctx.font = `${FS}px ui-monospace, Menlo, monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+}
+
+function glyph(s, gx, gy, c, a = 1) {
+  if (!s || s === " " || a <= 0.01) return;
+  const px = ox + gx * cw, py = oy + gy * chh;
+  const x0 = Math.round(px), x2 = Math.round(px + cw), y0 = Math.round(py), y2 = Math.round(py + chh);
+  ctx.fillStyle = css(c, a);
+  const bits = QBITS[s];
+  if (bits) {
+    if (bits === 15) { ctx.fillRect(x0, y0, x2 - x0, y2 - y0); return; }
+    const x1 = Math.round(px + cw / 2), y1 = Math.round(py + chh / 2);
+    if (bits & 1) ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    if (bits & 2) ctx.fillRect(x1, y0, x2 - x1, y1 - y0);
+    if (bits & 4) ctx.fillRect(x0, y1, x1 - x0, y2 - y1);
+    if (bits & 8) ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    return;
+  }
+  if (SHADE[s]) { ctx.fillStyle = css(c, a * SHADE[s]); ctx.fillRect(x0, y0, x2 - x0, y2 - y0); return; }
+  if (EIGHTHS[s]) { const h = Math.round((y2 - y0) * EIGHTHS[s] / 8); ctx.fillRect(x0, y2 - h, x2 - x0, h); return; }
+  ctx.fillText(s, px + cw / 2, py + chh / 2 + 0.5);
+}
+
+function render(chars, parts, under) {
+  ctx.fillStyle = css(BG); ctx.fillRect(0, 0, W, H);
+  const drawParts = () => { if (parts) for (const p of parts) glyph(p.s, p.x, p.y, p.c, p.a == null ? 1 : p.a); };
+  if (under) drawParts();
+  for (const ch of chars) if (ch.vis) glyph(ch.s, ch.x, ch.y, ch.c, ch.a);
+  if (!under) drawParts();
+}
+
+// ---------------------------------------------------------------------------
+// Turning text / logos into character art
+// ---------------------------------------------------------------------------
+function canvas(w, h) { const c = document.createElement("canvas"); c.width = Math.max(1, w); c.height = Math.max(1, h); return c; }
+function loadImage(src) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; }); }
+
+// Crop a canvas (alpha = ink) to the bounding box of its ink.
+function cropInk(c) {
+  const w = c.width, h = c.height, p = c.getContext("2d").getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (p[(y * w + x) * 4 + 3] > 40) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  if (x1 < 0) return null;
+  const o = canvas(x1 - x0 + 1, y1 - y0 + 1);
+  o.getContext("2d").drawImage(c, x0, y0, o.width, o.height, 0, 0, o.width, o.height);
+  return o;
+}
+
+function inkFromImage(im, invert) {
+  let w = im.naturalWidth || im.width || 512, h = im.naturalHeight || im.height || 512;
+  const sc = 1024 / Math.max(w, h);
+  w = Math.max(1, Math.round(w * sc)); h = Math.max(1, Math.round(h * sc));
+  const c = canvas(w, h), x = c.getContext("2d", { willReadFrequently: true });
+  x.drawImage(im, 0, 0, w, h);
+  const d = x.getImageData(0, 0, w, h), p = d.data;
+  let transparent = false;
+  for (let i = 3; i < p.length; i += 28) if (p[i] < 250) { transparent = true; break; }
+  if (!transparent) {
+    // Opaque image: key out the background using the corner colours.
+    const cs = [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]].map(([cx, cy]) => { const i = (cy * w + cx) * 4; return [p[i], p[i + 1], p[i + 2]]; });
+    const bg = [0, 1, 2].map(k => cs.reduce((s, c) => s + c[k], 0) / 4);
+    for (let i = 0; i < p.length; i += 4) {
+      const dd = Math.hypot(p[i] - bg[0], p[i + 1] - bg[1], p[i + 2] - bg[2]);
+      p[i + 3] = clamp((dd - 28) * 4, 0, 255);
+    }
+  }
+  if (invert) for (let i = 3; i < p.length; i += 4) p[i] = 255 - p[i];
+  x.putImageData(d, 0, 0);
+  return cropInk(c);
+}
+
+function fontFamily(f) {
+  if (!f) return "system-ui";
+  if (/^(system-ui|serif|sans-serif|monospace|ui-[a-z-]+)$/.test(f)) return f;
+  return `"${f}", system-ui`;
+}
+
+function inkFromText(lines) {
+  if (!lines.length) return null;
+  const fs = 220, lh = fs * 1.08;
+  const font = `${C.fontWeight || "900"} ${fs}px ${fontFamily(C.font)}`;
+  const m = canvas(10, 10).getContext("2d"); m.font = font;
+  const wmax = Math.max(...lines.map(l => m.measureText(l).width));
+  const c = canvas(Math.ceil(wmax + fs), Math.ceil(lines.length * lh + fs)), x = c.getContext("2d");
+  x.font = font; x.fillStyle = "#fff"; x.textAlign = "center"; x.textBaseline = "middle";
+  lines.forEach((l, i) => x.fillText(l, c.width / 2, fs / 2 + lh * (i + 0.5)));
+  return cropInk(c);
+}
+
+// Sample an ink canvas into a wc x hc block of cells starting at (gx, gy).
+function sample(src, gx, gy, wc, hc, colorOf, useOrig, out, shadowOut) {
+  const blocks = C.style !== "ascii";
+  const sx = blocks ? 2 : 1, sy = blocks ? 2 : 1, SS = 4;
+  const nx = wc * sx, ny = hc * sy;
+  const c = canvas(nx * SS, ny * SS), x = c.getContext("2d", { willReadFrequently: true });
+  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+  x.drawImage(src, 0, 0, c.width, c.height);
+  const p = x.getImageData(0, 0, c.width, c.height).data;
+  const cov = new Float32Array(nx * ny), col = new Float32Array(nx * ny * 3);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    let a = 0, r = 0, g = 0, b = 0;
+    for (let v = 0; v < SS; v++) for (let u = 0; u < SS; u++) {
+      const k = (((j * SS + v) * c.width) + (i * SS + u)) * 4, al = p[k + 3] / 255;
+      a += al; r += p[k] * al; g += p[k + 1] * al; b += p[k + 2] * al;
+    }
+    const n = j * nx + i;
+    cov[n] = a / (SS * SS);
+    if (a > 0) { col[n * 3] = r / a; col[n * 3 + 1] = g / a; col[n * 3 + 2] = b / a; }
+  }
+  const on = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && cov[j * nx + i] > 0.45;
+  for (let cy = 0; cy < hc; cy++) for (let cx = 0; cx < wc; cx++) {
+    let ch, n;
+    if (blocks) {
+      const i = cx * 2, j = cy * 2;
+      const bits = (on(i, j) ? 1 : 0) | (on(i + 1, j) ? 2 : 0) | (on(i, j + 1) ? 4 : 0) | (on(i + 1, j + 1) ? 8 : 0);
+      if (!bits) continue;
+      ch = QCHARS[bits];
+      n = [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]].map(([a, b]) => b * nx + a).reduce((best, k) => cov[k] > cov[best] ? k : best);
+    } else {
+      n = cy * nx + cx;
+      if (cov[n] < 0.08) continue;
+      ch = RAMP[Math.min(RAMP.length - 1, 1 + Math.floor(cov[n] * (RAMP.length - 1)))];
+    }
+    const X = gx + cx, Y = gy + cy;
+    const color = useOrig ? [col[n * 3], col[n * 3 + 1], col[n * 3 + 2]] : colorOf(X, Y);
+    out.push({ x: X, y: Y, ch, color });
+  }
+  // Drop shadow: the shape shifted one cell right and down, drawn dim behind it.
+  if (blocks && shadowOut) {
+    const dy = Math.max(1, Math.round(ny * 0.035)), dx = Math.max(1, Math.round(dy * chh / cw));
+    const ex = Math.ceil(dx / 2), ey = Math.ceil(dy / 2);
+    for (let cy = 0; cy < hc + ey; cy++) for (let cx = 0; cx < wc + ex; cx++) {
+      const i = cx * 2, j = cy * 2;
+      const s = (a, b) => !on(a, b) && on(a - dx, b - dy);
+      const bits = (s(i, j) ? 1 : 0) | (s(i + 1, j) ? 2 : 0) | (s(i, j + 1) ? 4 : 0) | (s(i + 1, j + 1) ? 8 : 0);
+      if (!bits) continue;
+      const X = gx + cx, Y = gy + cy;
+      shadowOut.push({ x: X, y: Y, ch: QCHARS[bits], color: DIM(colorOf(X, Y), 0.28), shadow: true });
+    }
+  }
+}
+
+let B; // bounds of the art in cells
+function makeColorFn(x0, y0, x1, y1) {
+  const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const k = chh / cw, rmax = Math.hypot(w / 2, h / 2 * k) || 1;
+  return (x, y) => {
+    const u = (x - x0) / w, v = (y - y0) / h;
+    switch (C.gradientDirection) {
+      case "horizontal": return grad(u);
+      case "vertical": return grad(v);
+      case "radial": return grad(Math.hypot(x - cx, (y - cy) * k) / rmax);
+      default: return grad(u * 0.6 + v * 0.4);
+    }
+  };
+}
+
+async function buildArt() {
+  const size = clamp(+C.size || 0.6, 0.1, 0.98);
+  const maxW = Math.max(8, Math.floor(cols * size)), maxH = Math.max(4, Math.floor(rows * size));
+  const k = chh / cw;
+  const cells = [], shadows = [];
+
+  if (C.asciiArt && C.asciiArt.trim()) {
+    const ls = C.asciiArt.replace(/\s+$/, "").split("\n");
+    while (ls.length && !ls[0].trim()) ls.shift();
+    const w = Math.max(...ls.map(l => [...l].length)), h = ls.length;
+    const x0 = Math.floor((cols - w) / 2), y0 = Math.floor((rows - h) / 2);
+    const colorOf = makeColorFn(x0, y0, x0 + w - 1, y0 + h - 1);
+    ls.forEach((l, j) => [...l].forEach((ch, i) => { if (ch !== " ") cells.push({ x: x0 + i, y: y0 + j, ch, color: colorOf(x0 + i, y0 + j) }); }));
+    return finishArt(cells);
+  }
+
+  let logo = null;
+  if (LOGO) { try { logo = inkFromImage(await loadImage(LOGO), !!C.logoInvert); } catch (e) { logo = null; } }
+  const lines = (C.lines || []).map(s => String(s).replace(/\s+$/, ""));
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  while (lines.length && !lines[0]) lines.shift();
+  const text = lines.length ? inkFromText(lines) : null;
+  if (!logo && !text) return finishArt([]);
+
+  const asp = ink => ink.width / ink.height;
+  const dims = (ink, hc) => [Math.max(1, Math.round(asp(ink) * hc * k)), Math.max(1, Math.round(hc))];
+  const parts = [];
+  if (logo && text) {
+    const aL = asp(logo), aT = asp(text);
+    if (C.layout === "side") {
+      const gap = Math.max(3, Math.round(cols * 0.025));
+      const H0 = Math.min(maxH, (maxW - gap) / (k * (aL + aT * 0.42)));
+      const [lw, lh] = dims(logo, H0), [tw, th] = dims(text, Math.max(2, H0 * 0.42));
+      const x0 = Math.floor((cols - (lw + gap + tw)) / 2);
+      parts.push({ ink: logo, x: x0, y: Math.floor((rows - lh) / 2), w: lw, h: lh, logo: true });
+      parts.push({ ink: text, x: x0 + lw + gap, y: Math.floor((rows - th) / 2), w: tw, h: th });
+    } else {
+      const gap = Math.max(2, Math.round(rows * 0.05));
+      let lhc = (maxH - gap) / 1.4, thc = lhc * 0.4;
+      lhc = Math.min(lhc, maxW / (k * aL)); thc = Math.min(thc, maxW / (k * aT));
+      const [lw, lh] = dims(logo, lhc), [tw, th] = dims(text, Math.max(2, thc));
+      const y0 = Math.floor((rows - (lh + gap + th)) / 2);
+      parts.push({ ink: logo, x: Math.floor((cols - lw) / 2), y: y0, w: lw, h: lh, logo: true });
+      parts.push({ ink: text, x: Math.floor((cols - tw) / 2), y: y0 + lh + gap, w: tw, h: th });
+    }
+  } else {
+    const ink = logo || text;
+    const hc = Math.min(maxH, maxW / (k * asp(ink)));
+    const [w, h] = dims(ink, hc);
+    parts.push({ ink, x: Math.floor((cols - w) / 2), y: Math.floor((rows - h) / 2), w, h, logo: !!logo });
+  }
+  const x0 = Math.min(...parts.map(p => p.x)), y0 = Math.min(...parts.map(p => p.y));
+  const x1 = Math.max(...parts.map(p => p.x + p.w)), y1 = Math.max(...parts.map(p => p.y + p.h));
+  const colorOf = makeColorFn(x0, y0, x1, y1);
+  for (const p of parts) sample(p.ink, p.x, p.y, p.w, p.h, colorOf, p.logo && C.logoColors === "original", cells, C.shadow ? shadows : null);
+  return finishArt(shadows.concat(cells));
+}
+
+function finishArt(cells) {
+  if (!cells.length) { B = { x0: 0, y0: 0, x1: 1, y1: 1, w: 1, h: 1, cx: cols / 2, cy: rows / 2 }; return cells; }
+  const xs = cells.map(c => c.x), ys = cells.map(c => c.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  B = { x0, y0, x1, y1, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
+  return cells;
+}
+
+// ---------------------------------------------------------------------------
+// Effects. Each returns { update(dt) -> done, parts }.
+// A char: tx,ty target; x,y current; s symbol; fin final symbol; fc final colour; c colour; a alpha; vis.
+// ---------------------------------------------------------------------------
+const byKey = (chs, f) => { const m = new Map(); for (const c of chs) { const k = f(c); if (!m.has(k)) m.set(k, []); m.get(k).push(c); } return m; };
+
+const EFFECTS = {
+  decrypt(chs) {
+    const typeDur = 0.8, order = shuffle(chs.slice());
+    order.forEach((c, i) => { c.vis = false; c.t0 = i / order.length * typeDur; c.lock = typeDur + 0.5 + R() * 2.2; c.nt = 0; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        if (t < c.t0) { done = false; continue; }
+        c.vis = true;
+        if (t < c.lock) {
+          done = false; c.nt -= dt;
+          if (c.nt <= 0) { c.nt = 0.04 + R() * 0.09; c.s = pick(GLY); c.c = t < typeDur + 0.3 ? DIM(grad(R()), 0.4) : mix(BG, grad(R()), 0.55 + R() * 0.4); }
+        } else {
+          const k = clamp((t - c.lock) / 0.35); c.s = c.fin; c.c = mix(WHITE, c.fc, k); if (k < 1) done = false;
+        }
+      }
+      return done;
+    } };
+  },
+
+  rain(chs) {
+    const RC = [mix(ACC, WHITE, .35), ACC, mix(ACC, BG, .3), mix(grad(0), WHITE, .2)];
+    chs.forEach(c => { c.vis = false; c.d = R() * 1.6; c.y = -1 - R() * rows * 0.3; c.v = rows * (0.5 + R() * 0.3); c.land = -1; c.rc = pick(RC); });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        if (t < c.d) { done = false; continue; }
+        c.vis = true;
+        if (c.land < 0) {
+          done = false; c.v += rows * 1.5 * dt; c.y += c.v * dt; c.s = pick(["│", "¦", "|", ":"]); c.c = c.rc;
+          if (c.y >= c.ty) { c.y = c.ty; c.land = t; c.s = c.fin; }
+        } else {
+          const k = clamp((t - c.land) / 0.5); c.c = mix(c.rc, c.fc, k); if (k < 1) done = false;
+        }
+      }
+      return done;
+    } };
+  },
+
+  beams(chs) {
+    chs.forEach(c => { c.vis = false; c.lit = -1; });
+    const rowsM = byKey(chs, c => c.ty), BEAM = mix(ACC, WHITE, 0.4);
+    const beams = shuffle([...rowsM.keys()]).map((y, i) => ({ y, d: i * 0.05 + R() * 0.15, dir: R() < .5 ? 1 : -1 }));
+    const span = B.w + 30, speed = span / 0.75;
+    const p1 = Math.max(0, ...beams.map(b => b.d)) + 0.85;
+    const dist = c => (c.tx - B.x0) + (c.ty - B.y0) * 2, maxD = B.w + B.h * 2, sweep = (maxD + 10) / 1.1;
+    const parts = []; let t = 0;
+    return { parts, update(dt) {
+      t += dt; parts.length = 0;
+      for (const b of beams) {
+        const lt = t - b.d; if (lt < 0) continue;
+        const head = b.dir > 0 ? B.x0 - 15 + lt * speed : B.x1 + 15 - lt * speed;
+        if (lt * speed < span + 10) for (let i = 0; i < 10; i++) parts.push({ x: Math.round(head - b.dir * i), y: b.y, s: i < 2 ? "█" : i < 4 ? "▓" : i < 7 ? "▒" : "░", c: BEAM, a: 1 - i / 11 });
+        for (const c of rowsM.get(b.y)) if (c.lit < 0 && (b.dir > 0 ? c.tx <= head : c.tx >= head)) { c.lit = t; c.vis = true; c.s = c.fin; }
+      }
+      const front = (t - p1) * sweep;
+      for (const c of chs) {
+        if (c.lit < 0) continue;
+        const dim = DIM(c.fc, 0.4);
+        c.c = mix(BEAM, dim, clamp((t - c.lit) / 0.4));
+        if (front > 0 && dist(c) < front) {
+          const kk = clamp((front - dist(c)) / 10);
+          c.c = kk < 0.3 ? mix(dim, WHITE, kk / 0.3) : mix(WHITE, c.fc, (kk - 0.3) / 0.7);
+        }
+      }
+      return front > maxD + 12;
+    } };
+  },
+
+  matrix(chs) {
+    chs.forEach(c => { c.vis = false; c.rev = -1; });
+    const byCol = byKey(chs, c => c.tx), HEAD = mix(ACC, WHITE, 0.65), REV = 1.4;
+    const drops = [], parts = []; let t = 0, allAt = -1;
+    const spawn = col => drops.push({ x: col, y: -R() * rows * 0.4, v: rows * (0.45 + R() * 0.6), len: ri(6, 22), g: Array.from({ length: 24 }, () => pick(GLY)) });
+    return { parts, under: true, update(dt) {
+      t += dt;
+      const unrevealed = [...byCol.keys()].filter(x => byCol.get(x).some(c => c.rev < 0));
+      if (allAt < 0) {
+        let n = cols * dt * 0.9; while (n > 0) { if (R() < n) spawn(t > REV && unrevealed.length && R() < 0.7 ? pick(unrevealed) : ri(0, cols - 1)); n -= 1; }
+      }
+      for (const d of drops) {
+        d.y += d.v * dt; if (R() < 0.3) d.g[ri(0, 23)] = pick(GLY);
+        if (t > REV && byCol.has(d.x)) for (const c of byCol.get(d.x)) if (c.rev < 0 && c.ty <= d.y) { c.rev = t; c.vis = true; c.s = c.fin; }
+      }
+      for (let i = drops.length - 1; i >= 0; i--) if (drops[i].y - drops[i].len > rows) drops.splice(i, 1);
+      if (allAt < 0 && t > REV && !unrevealed.length) allAt = t;
+      parts.length = 0;
+      for (const d of drops) {
+        const hy = Math.floor(d.y);
+        for (let i = 0; i < d.len; i++) {
+          const y = hy - i; if (y < 0 || y >= rows) continue;
+          parts.push({ x: d.x, y, s: d.g[(y % 24 + 24) % 24], c: i === 0 ? HEAD : mix(BG, ACC, (1 - i / d.len) * 0.85) });
+        }
+      }
+      const kk = allAt < 0 ? 0 : clamp((t - allAt) / 1.2);
+      for (const c of chs) if (c.rev >= 0) c.c = mix(mix(HEAD, ACC, clamp((t - c.rev) / 0.5)), c.fc, kk);
+      return allAt >= 0 && kk >= 1 && !drops.length;
+    } };
+  },
+
+  slide(chs) {
+    const ys = [...new Set(chs.map(c => c.ty))].sort((a, b) => a - b);
+    chs.forEach(c => { const i = ys.indexOf(c.ty); c.vis = true; c.s = c.fin; c.dir = i % 2 ? 1 : -1; c.d = i * 0.035; c.sx = c.tx + c.dir * (cols + 4); });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) { const k = clamp((t - c.d) / 1.1); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, easeOut(k)); c.c = mix(ACC, c.fc, k); }
+      return done;
+    } };
+  },
+
+  print(chs) {
+    const rowsM = byKey(chs, c => c.ty), ys = [...rowsM.keys()].sort((a, b) => a - b);
+    const cps = Math.max(60, (B.w + 1) * ys.length / 2.4);
+    let start = 0; const lines = [];
+    for (const y of ys) {
+      const r = rowsM.get(y), x0 = Math.min(...r.map(c => c.tx)), x1 = Math.max(...r.map(c => c.tx));
+      r.forEach(c => { c.vis = false; c.s = c.fin; c.pt = start + (c.tx - x0) / cps; });
+      lines.push({ y, x0, x1, start, end: start + (x1 - x0 + 1) / cps }); start += (x1 - x0 + 1) / cps + 0.03;
+    }
+    const parts = []; let t = 0;
+    return { parts, update(dt) {
+      t += dt; parts.length = 0;
+      const ln = lines.find(l => t >= l.start && t < l.end + 0.03);
+      if (ln) parts.push({ x: Math.min(ln.x1 + 1, Math.floor(ln.x0 + (t - ln.start) * cps)), y: ln.y, s: "█", c: ACC });
+      for (const c of chs) if (t >= c.pt) { c.vis = true; c.c = mix(WHITE, c.fc, clamp((t - c.pt) / 0.3)); }
+      return t > start + 0.35;
+    } };
+  },
+
+  burn(chs) {
+    const SY = "'.▖▙█▜▀▝.".split(""), ASH = mix(BG, [150, 150, 150], 0.22);
+    chs.forEach(c => { c.vis = true; c.s = c.fin; c.c = ASH; c.ig = (B.y1 - c.ty) / B.h * 1.6 + R() * 0.6 + Math.abs(c.tx - B.cx) / B.w * 0.35; c.sm = false; });
+    const parts = []; let t = 0;
+    return { parts, update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        const lt = t - c.ig; if (lt < 0) { done = false; continue; }
+        if (lt < 0.6) {
+          done = false; c.s = SY[Math.min(SY.length - 1, Math.floor(lt / 0.6 * SY.length))]; c.c = fire(lt / 0.6);
+          if (!c.sm && R() < 0.12) { c.sm = true; parts.push({ x: c.tx, y: c.ty, s: pick([".", "·", "°", "˙"]), c: [120, 120, 120], a: 0.8, vy: -(2 + R() * 4), life: 1 }); }
+        } else { const k = clamp((lt - 0.6) / 0.5); c.s = c.fin; c.c = mix(FIRE[3], c.fc, k); if (k < 1) done = false; }
+      }
+      for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; p.y += p.vy * dt; p.life -= dt; p.a = Math.max(0, p.life * 0.8); if (p.life <= 0) parts.splice(i, 1); }
+      return done && !parts.length;
+    } };
+  },
+
+  expand(chs) {
+    chs.forEach(c => { c.vis = true; c.s = c.fin; c.sx = B.cx + (R() - .5) * 2; c.sy = B.cy + (R() - .5); c.d = R() * 0.35; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) { const k = clamp((t - c.d) / 1.3), e = easeExpo(k); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, e); c.y = lerp(c.sy, c.ty, e); c.c = mix(WHITE, c.fc, k); }
+      return done;
+    } };
+  },
+
+  scatter(chs) {
+    chs.forEach(c => { c.vis = true; c.sx = R() * cols; c.sy = R() * rows; c.d = R() * 0.5; c.dur = 1.4 + R() * 0.8; c.nt = 0; c.s = pick(GLY); });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        const k = clamp((t - c.d) / c.dur), e = easeInOut(k); if (k < 1) done = false;
+        c.x = lerp(c.sx, c.tx, e); c.y = lerp(c.sy, c.ty, e);
+        if (k < 0.92) { c.nt -= dt; if (c.nt <= 0) { c.nt = 0.08; c.s = pick(GLY); } } else c.s = c.fin;
+        c.c = mix(DIM(c.fc, 0.5), c.fc, e);
+      }
+      return done;
+    } };
+  },
+
+  sweep(chs) {
+    const fx = R() < .5, fy = R() < .5, SEQ = ["░", "▒", "▓"];
+    const dist = c => (fx ? B.x1 - c.tx : c.tx - B.x0) + (fy ? B.y1 - c.ty : c.ty - B.y0) * 1.5;
+    const maxD = B.w + B.h * 1.5, speed = (maxD + 1) / 1.4;
+    chs.forEach(c => { c.vis = false; c.d = dist(c) / speed; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        const lt = t - c.d; if (lt < 0) { done = false; continue; }
+        c.vis = true;
+        if (lt < 0.24) { done = false; c.s = SEQ[Math.floor(lt / 0.08)]; c.c = ACC; }
+        else { const k = clamp((lt - 0.24) / 0.5); c.s = c.fin; c.c = mix(mix(ACC, WHITE, .3), c.fc, k); if (k < 1) done = false; }
+      }
+      return done;
+    } };
+  },
+
+  waves(chs) {
+    const E = "▁▂▃▄▅▆▇█".split(""), WC = mix(ACC, WHITE, 0.25);
+    chs.forEach(c => { c.vis = false; c.d = (c.tx - B.x0) / B.w * 1.3 + (Math.sin(c.ty * 0.45) + 1) * 0.12; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        const lt = t - c.d; if (lt < 0) { done = false; continue; }
+        c.vis = true;
+        if (lt < 0.35) { done = false; c.s = E[Math.min(7, Math.floor(lt / 0.35 * 8))]; c.c = WC; }
+        else { const k = clamp((lt - 0.35) / 0.6); c.s = c.fin; c.c = mix(WC, c.fc, k); if (k < 1) done = false; }
+      }
+      return done;
+    } };
+  },
+
+  spotlights(chs) {
+    chs.forEach(c => { c.vis = true; c.s = c.fin; c.c = BG; });
+    const k = chh / cw, rad = Math.max(6, Math.min(B.w, B.h * k) * 0.28);
+    const L = Array.from({ length: 3 }, () => ({ x: B.x0 + R() * B.w, y: B.y0 + R() * B.h, vx: (R() - .5) * B.w * 0.9, vy: (R() - .5) * B.h * 0.9 }));
+    const maxR = Math.hypot(B.w, B.h * k) * 0.6 + 6;
+    let t = 0;
+    return { update(dt) {
+      t += dt;
+      for (const l of L) {
+        if (t < 2.4) { l.x += l.vx * dt; l.y += l.vy * dt; if (l.x < B.x0 || l.x > B.x1) l.vx *= -1; if (l.y < B.y0 || l.y > B.y1) l.vy *= -1; }
+        else { l.x = lerp(l.x, B.cx, clamp(dt * 4)); l.y = lerp(l.y, B.cy, clamp(dt * 4)); }
+      }
+      const r = t < 3.1 ? rad : lerp(rad, maxR, easeOut(clamp((t - 3.1) / 1.1)));
+      for (const c of chs) {
+        let b = 0;
+        for (const l of L) b = Math.max(b, clamp(1 - Math.hypot(c.tx - l.x, (c.ty - l.y) * k) / r));
+        c.c = mix(BG, c.fc, Math.max(0.05, Math.pow(b, 0.7)));
+      }
+      return t > 4.3;
+    } };
+  },
+};
+
+const EXITS = {
+  dissolve(chs) {
+    const SEQ = ["▓", "▒", "░"];
+    chs.forEach(c => { c.d = R() * 1.0; c.c0 = c.c; });
+    let t = 0;
+    return { update(dt) {
+      t += dt;
+      for (const c of chs) { const lt = t - c.d; if (lt < 0) continue; if (lt >= 0.3) { c.vis = false; continue; } c.s = SEQ[Math.floor(lt / 0.1)]; c.c = mix(c.c0, BG, lt / 0.3); }
+      return t > 1.35;
+    } };
+  },
+  fall(chs) {
+    chs.forEach(c => { c.d = R() * 0.8 + (B.y1 - c.ty) / B.h * 0.3; c.v = 0; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) { if (t < c.d) { done = false; continue; } c.v += rows * 2.2 * dt; c.y += c.v * dt; if (c.y < rows + 2) done = false; }
+      return done;
+    } };
+  },
+  fade(chs) {
+    chs.forEach(c => { c.c0 = c.c; });
+    let t = 0;
+    return { update(dt) { t += dt; const k = clamp(t / 0.9); for (const c of chs) c.c = mix(c.c0, BG, k); return k >= 1; } };
+  },
+  scatterOut(chs) {
+    chs.forEach(c => { c.ex = R() * cols; c.ey = R() * rows; c.d = R() * 0.3; c.c0 = c.c; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        const k = clamp((t - c.d) / 1.0), e = easeInOut(k); if (k < 1) done = false;
+        c.x = lerp(c.tx, c.ex, e); c.y = lerp(c.ty, c.ey, e); c.c = mix(c.c0, BG, e);
+        if (k > 0.1 && R() < 0.2) c.s = pick(GLY);
+      }
+      return done;
+    } };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Cycle: effect in -> hold (with one shine) -> exit -> short gap -> repeat
+// ---------------------------------------------------------------------------
+let art = [], chars = [], phase = "idle", cur = null, t = 0, lastName = "", paused = !!window.TERMWALL_PAUSED;
+let rafOn = false, last = 0, sleepTimer = null, gen = 0;
+
+const QS = new URLSearchParams(location.search); // ?effect=matrix for testing in a browser
+const effectNames = () => { if (EFFECTS[QS.get("effect")]) return [QS.get("effect")]; const e = (C.effects || []).filter(n => EFFECTS[n]); return e.length ? e : ALL_EFFECTS; };
+function freshChars() { return art.map(c => ({ tx: c.x, ty: c.y, x: c.x, y: c.y, s: c.ch, fin: c.ch, fc: c.color, c: c.color, a: 1, vis: true })); }
+
+function beginIn() {
+  chars = freshChars();
+  const names = effectNames();
+  let name = pick(names); if (names.length > 1) while (name === lastName) name = pick(names);
+  lastName = name; cur = EFFECTS[name](chars); phase = "in"; t = 0; wake();
+}
+function beginHold() {
+  phase = "hold"; t = 0;
+  chars.forEach(c => { c.x = c.tx; c.y = c.ty; c.s = c.fin; c.c = c.fc; c.vis = true; c.a = 1; });
+  render(chars, null);
+  const hold = Math.max(1, +C.holdSeconds || 8) / Math.max(0.1, +C.speed || 1);
+  if (hold > 3) sleepFor(hold * 500, beginShine);
+  else sleepFor(hold * 1000, beginOut);
+}
+function beginShine() {
+  phase = "shine"; t = 0;
+  const span = B.w + B.h * 2 + 24;
+  cur = { update(dt) {
+    t += dt; const b = -12 + t * span / 1.6;
+    for (const c of chars) { const d = (c.tx - B.x0) + (c.ty - B.y0) * 2, i = clamp(1 - Math.abs(d - b) / 7); c.c = mix(c.fc, WHITE, 0.5 * i * i); }
+    return b > span;
+  } };
+  wake();
+}
+function afterShine() {
+  phase = "hold2"; chars.forEach(c => c.c = c.fc); render(chars, null);
+  const hold = Math.max(1, +C.holdSeconds || 8) / Math.max(0.1, +C.speed || 1);
+  sleepFor(Math.max(500, hold * 500 - 1600), beginOut);
+}
+function beginOut() { cur = pick(Object.values(EXITS))(chars); phase = "out"; t = 0; wake(); }
+function afterOut() { phase = "gap"; render([], null); sleepFor(600 / Math.max(0.1, +C.speed || 1), beginIn); }
+
+function sleepFor(ms, fn) {
+  rafOn = false; clearTimeout(sleepTimer);
+  const g = gen;
+  sleepTimer = setTimeout(() => { if (g !== gen) return; if (paused) { pendingWake = fn; return; } fn(); }, ms);
+}
+let pendingWake = null, loopId = 0, frames = 0;
+function wake() {
+  if (rafOn || paused) return;
+  rafOn = true; last = performance.now();
+  const id = ++loopId;
+  const tick = now => { if (!rafOn || id !== loopId) return; requestAnimationFrame(tick); loop(now); };
+  requestAnimationFrame(tick);
+}
+
+function loop(now) {
+  if (paused) { rafOn = false; return; }
+  const minDt = 1000 / clamp(+C.fps || 30, 5, 120);
+  if (now - last < minDt - 2) return;
+  const dt = Math.min(0.1, (now - last) / 1000) * clamp(+C.speed || 1, 0.1, 5);
+  last = now;
+  const done = cur ? cur.update(dt) : true;
+  render(chars, cur && cur.parts, cur && cur.under);
+  frames++;
+  if (done) {
+    if (phase === "in") beginHold();
+    else if (phase === "shine") afterShine();
+    else if (phase === "out") afterOut();
+  }
+}
+
+async function start() {
+  gen++; clearTimeout(sleepTimer); rafOn = false;
+  setupGrid();
+  art = await buildArt();
+  if (!art.length) {
+    render([], null);
+    ctx.fillStyle = css(DIM(grad(0.5), 0.6));
+    ctx.fillText("Add some words or a logo from the TermWall menu → Customize…", W / 2, H / 2);
+    return;
+  }
+  beginIn();
+}
+
+window.termwall = {
+  next() { gen++; clearTimeout(sleepTimer); beginIn(); },
+  setPaused(p) {
+    paused = !!p;
+    if (paused) return;
+    if (pendingWake) { const f = pendingWake; pendingWake = null; f(); }
+    else if (phase === "in" || phase === "shine" || phase === "out") wake();
+  },
+};
+
+let rt = null;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(start, 300); });
+start();
+</script>
+</body>
+</html>
