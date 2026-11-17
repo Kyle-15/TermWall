@@ -1,6 +1,6 @@
 # TermWall
 
-An animated terminal-style wallpaper for macOS. Your words and/or logo are drawn out of block and ASCII characters, played in with one of 24 terminal text effects, held for a few seconds, then played out again. It lives on your desktop, behind your icons, not in the screen saver.
+An animated terminal-style wallpaper for macOS. Your words and/or logo are drawn out of block and ASCII characters, played in with one of 24 terminal text effects, held for a few seconds, then played out again. It lives on your desktop, behind your icons, and can be your screen saver too.
 
 Inspired by the look of the Omarchy screen saver.
 
@@ -17,6 +17,7 @@ Inspired by the look of the Omarchy screen saver.
 - **24 effects:** decrypt, rain, beams, matrix, slide, print, burn, expand, scatter, sweep, waves, spotlights, thunder, funnel, blackhole, vortex, bounce, glitch, unstable, fireworks, ripple, laser, overflow, condense. Plus 7 ways out: dissolve, fall, fade, scatter, funnel, blackhole, shatter. Moving characters are ASCII that gets denser as they travel and turn into blocks when they land.
 - **Font weights:** tick any of the nine weights (Ultralight to Black) and each animation uses a different one.
 - **Themes:** Tokyo Night, Catppuccin, Gruvbox, Nord, Everforest, Kanagawa, Rosé Pine, Matte Black, Matrix, Synthwave, or your own colors.
+- **Screen saver too:** the same animation and settings as a macOS screen saver. The desktop animation pauses while the screen saver is showing.
 - **Multiple screens:** every display gets its own copy, running at that display's refresh rate.
 - **Light on power:** drawn on the GPU in one call per frame, only over the part of the screen an effect actually uses, and nothing at all is drawn between animations. Below your screen's refresh rate it wakes only when a frame is due, so macOS redraws the desktop less often. It can pause by itself when a game or window covers the desktop, on battery, or in Low Power Mode, and there are frame-rate, resolution and particle settings (with Max / Balanced / Battery saver presets).
 
@@ -48,6 +49,7 @@ TermWall runs from the menu bar (the TV-with-sparkles icon):
 
 - **Customize…** words, font and weights, logo, theme and colors, effects, timing, and performance. Press **Apply** to see the changes.
 - **Next Effect**, **Pause**, **Reload**
+- **Install Screen Saver…** copies the TermWall screen saver into `~/Library/Screen Savers` and opens Screen Saver settings. Pick **TermWall** there (usually under Other). It uses the same settings as the desktop.
 - **Start at Login** adds a login item so it comes back after a restart.
 - **Quit TermWall** gives you your normal wallpaper back.
 
@@ -57,7 +59,9 @@ Settings are saved in `~/Library/Application Support/TermWall/config.json`. Logo
 
 ## How it works
 
-`Sources/main.swift` is a small menu-bar app. For every screen it opens a borderless window at desktop level (above the real wallpaper, below the icons) that ignores the mouse, and shows `wall.html` in a WebKit view. The page turns your text and logo into a grid of quadrant-block characters and draws every frame with one instanced WebGL2 call from a glyph atlas (with a Canvas 2D fallback). The app watches the window list, battery and Low Power Mode and tells each screen when to pause.
+`Sources/main.swift` is a small menu-bar app, `Sources/Saver.swift` is the screen saver, and `Sources/Shared.swift` holds the settings code both use. For every screen it opens a borderless window at desktop level (above the real wallpaper, below the icons) that ignores the mouse, and shows `wall.html` in a WebKit view. The page turns your text and logo into a grid of quadrant-block characters and draws every frame with one instanced WebGL2 call from a glyph atlas (with a Canvas 2D fallback). The app watches the window list, battery and Low Power Mode and tells each screen when to pause.
+
+The screen saver runs inside macOS's sandboxed screen saver host, which may read the user's files, so it reads the same `config.json`. On macOS 14 and newer that host doesn't reliably call `startAnimation`/`stopAnimation`, so the screen saver plays as soon as its page loads and stops on the `com.apple.screensaver.willstop` notification. For debugging, build it with `SAVER_FLAGS="-D TERMWALL_DIAG" ./build.sh` and it reports its state to `http://127.0.0.1:8799/log`.
 
 To try effects in a browser, serve the folder (`python3 -m http.server`) and open `wall.html?effect=thunder&text=HELLO&weights=200,900`.
 
