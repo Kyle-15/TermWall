@@ -41,6 +41,9 @@ const DETAIL = Math.min(1, Math.max(0.25, +C.detail || 1));
 if (QS.has("flashes")) C.flashes = +QS.get("flashes");
 if (QS.has("colorChange")) C.colorChange = QS.get("colorChange");
 if (QS.has("colorFlow")) C.colorFlow = +QS.get("colorFlow");
+if (QS.has("bg")) C.colorChangeBackground = QS.get("bg") === "1";
+if (QS.has("dir")) C.gradientDirection = QS.get("dir");
+if (QS.has("shine")) C.shine = QS.get("shine");
 const FL = Math.min(1, Math.max(0, C.flashes == null || isNaN(+C.flashes) ? 1 : +C.flashes));
 document.documentElement.style.background = C.background;
 document.body.style.background = C.background;
@@ -98,7 +101,11 @@ const BASE_STOPS = STOPS.map(c => c.slice()), BASE_ACC = ACC.slice();
 const COLOR_CHANGE = ["hue", "themes"].includes(C.colorChange) ? C.colorChange : "off";
 const FLOW = clamp(+C.colorFlow || 0);                 // 0 = still; 1 = one full sweep every ~4 s
 const FLOW_RATE = FLOW * 0.25, FLOW_FPS = Math.round(6 + 8 * FLOW);   // gradient lengths per second; frame rate while the art holds (a slow drift needs few frames)
-const LIVE_COLORS = COLOR_CHANGE !== "off" || FLOW > 0;
+const GRAD_DIRS = ["diagonal", "diagonal2", "horizontal", "vertical", "radial", "corner", "mirror", "conic", "diamond", "rings", "stripes", "waves"];
+const RANDOM_DIR = C.gradientDirection === "random";
+let gradDir = RANDOM_DIR ? "diagonal" : (C.gradientDirection || "diagonal");
+const CHANGE_BG = COLOR_CHANGE !== "off" && !!C.colorChangeBackground;
+const LIVE_COLORS = COLOR_CHANGE !== "off" || FLOW > 0 || RANDOM_DIR;
 const THEME_PALETTES = [
   ["#7aa2f7", "#bb9af7", "#7dcfff", "#9ece6a"], ["#89b4fa", "#cba6f7", "#f5c2e7", "#a6e3a1"],
   ["#fabd2f", "#fe8019", "#fb4934", "#b8bb26"], ["#88c0d0", "#81a1c1", "#b48ead", "#a3be8c"],
@@ -106,6 +113,7 @@ const THEME_PALETTES = [
   ["#ebbcba", "#c4a7e7", "#9ccfd8", "#31748f"], ["#f2f2f2", "#bdbdbd", "#7a7a7a", "#f59e0b"],
   ["#b7ffcf", "#00ff66", "#00a344", "#00ff66"], ["#ff7edb", "#fe4450", "#fede5d", "#36f9f6"],
 ].map(p => p.map(hex));
+const THEME_BGS = ["#1a1b26", "#1e1e2e", "#282828", "#2e3440", "#2d353b", "#1f1f28", "#191724", "#0d0d0d", "#000000", "#1a1028"].map(hex);
 function rgbToHsl(c) {
   const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
   if (mx === mn) return [0, 0, l];
@@ -119,15 +127,26 @@ function hslToRgb(h, s, l, o = [0, 0, 0]) {
 }
 const hueShift = (c, dh) => { const [h, s2, l] = rgbToHsl(c); return hslToRgb((h + dh + 1) % 1, s2, l); };
 let paletteN = 0, lastTheme = -1, flowPhase = 0;
+// The background changes by fading (about a second) so it never jumps.
+const BASE_BG = BG.slice(), bgFrom = BG.slice(), bgTo = BG.slice(); let bgT = 1;
+function fadeBackgroundTo(c) { cp(bgFrom, BG); cp(bgTo, c); bgT = 0; }
+function stepBackground(dt) {
+  bgT = Math.min(1, bgT + dt / 1.2);
+  const e = bgT * bgT * (3 - 2 * bgT);
+  mixc(BG, bgFrom, bgTo, e);
+  document.documentElement.style.background = document.body.style.background = css(BG);
+}
 function setPalette(stops, acc) { STOPS.length = 0; stops.forEach(c => STOPS.push(c.slice())); cp(ACC, acc); }
 function nextPalette() {
   paletteN++;
   if (COLOR_CHANGE === "hue") {
     const dh = (paletteN * 0.381966) % 1;                // golden-ratio steps: every animation looks clearly different
     setPalette(BASE_STOPS.map(c => hueShift(c, dh)), hueShift(BASE_ACC, dh));
+    if (CHANGE_BG) fadeBackgroundTo(hueShift(BASE_BG, dh));
   } else if (COLOR_CHANGE === "themes") {
     let i; do i = Math.floor(R() * THEME_PALETTES.length); while (i === lastTheme && THEME_PALETTES.length > 1);
     lastTheme = i; const p = THEME_PALETTES[i]; setPalette(p.slice(0, 3), p[3]);
+    if (CHANGE_BG) fadeBackgroundTo(THEME_BGS[i]);
   }
 }
 // Re-colour art cells in place (characters share these arrays as their final colour).
@@ -453,20 +472,35 @@ function sample(src, gx, gy, wc, hc, colorOf, useOrig, thr, out, shadowOut) {
   }
 }
 
-function makeColorFn(x0, y0, x1, y1) {
+// Where a cell sits on the gradient (0..1) for a direction, within the art's bounds.
+// Folds any number into 0..1 and back (0→1→0→1…), so repeating patterns have no hard seam.
+const tri = t => { t -= 2 * Math.floor(t / 2); return t > 1 ? 2 - t : t; };
+function makeParam(x0, y0, x1, y1, dir) {
   const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-  const rmax = Math.hypot(w / 2, h / 2 * K) || 1;
-  const param = (x, y) => {
-    const u = (x - x0) / w, v = (y - y0) / h;
-    switch (C.gradientDirection) {
+  const rmax = Math.hypot(w / 2, h / 2 * K) || 1, cmax = Math.hypot(w, h * K) || 1;
+  return (x, y) => {
+    const u = (x - x0) / w, v = (y - y0) / h, dx = x - cx, dy = (y - cy) * K;
+    switch (dir) {
       case "horizontal": return clamp(u);
       case "vertical": return clamp(v);
-      case "radial": return clamp(Math.hypot(x - cx, (y - cy) * K) / rmax);
+      case "radial": return clamp(Math.hypot(dx, dy) / rmax);
+      case "diagonal2": return clamp(u * 0.6 + (1 - v) * 0.4);
+      case "corner": return clamp(Math.hypot(x - x0, (y - y0) * K) / cmax);
+      case "mirror": return clamp(Math.abs(u - 0.5) * 2);
+      case "conic": return tri((Math.atan2(dy, dx) / Math.PI + 1));          // around the centre, mirrored at the back
+      case "diamond": return clamp(Math.abs(u - 0.5) + Math.abs(v - 0.5));
+      case "rings": return tri(Math.hypot(dx, dy) / rmax * 3);
+      case "stripes": return tri((u * 0.6 + v * 0.4) * 4);
+      case "waves": return clamp(0.5 + (u - 0.5) * 0.85 + 0.08 * Math.sin(v * Math.PI * 4));
       default: return clamp(u * 0.6 + v * 0.4);
     }
   };
+}
+function makeColorFn(x0, y0, x1, y1) {
+  const param = makeParam(x0, y0, x1, y1, gradDir);
   const fn = (x, y) => grad(param(x, y));
   fn.param = param;                                      // where a cell sits on the gradient, for re-colouring
+  fn.bounds = [x0, y0, x1, y1];
   return fn;
 }
 
@@ -488,7 +522,7 @@ async function buildArt(weight) {
     const x0 = Math.floor((cols - w) / 2), y0 = Math.floor((rows - h) / 2);
     const colorOf = makeColorFn(x0, y0, x0 + w - 1, y0 + h - 1);
     ls.forEach((l, j) => [...l].forEach((ch, i) => { if (ch !== " ") cells.push({ x: x0 + i, y: y0 + j, ch, color: colorOf(x0 + i, y0 + j), g: colorOf.param(x0 + i, y0 + j) }); }));
-    return finishArt(cells);
+    return finishArt(cells, colorOf.bounds);
   }
 
   const logo = await getLogoInk();
@@ -530,14 +564,14 @@ async function buildArt(weight) {
   const colorOf = makeColorFn(x0, y0, x1, y1);
   for (const p of parts) sample(p.ink, p.x, p.y, p.w, p.h, colorOf, p.logo && C.logoColors === "original",
     p.logo ? 0.45 : weightThreshold(weight), cells, C.shadow ? shadows : null);
-  return finishArt(shadows.concat(cells));
+  return finishArt(shadows.concat(cells), colorOf.bounds);
 }
 
-function finishArt(cells) {
+function finishArt(cells, gb) {
   if (!cells.length) return { cells, B: { x0: 0, y0: 0, x1: 1, y1: 1, w: 1, h: 1, cx: cols / 2, cy: rows / 2 } };
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const c of cells) { if (c.x < x0) x0 = c.x; if (c.x > x1) x1 = c.x; if (c.y < y0) y0 = c.y; if (c.y > y1) y1 = c.y; }
-  return { cells, B: { x0, y0, x1, y1, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 } };
+  return { cells, gb, B: { x0, y0, x1, y1, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 } };
 }
 
 // ===========================================================================
@@ -1265,10 +1299,14 @@ function measure(make) {
   const tr = (x, y, s, c, a = 1) => { if (a <= 0.004 || !s || s === " ") return; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; };
   try {
     const e = make(sim);
-    for (let i = 0, done = false; i < 900 && !done; i++) {
-      done = e.update(1 / 30);
+    // 15 steps a second is plenty to find the bounds (the margins below cover the gaps between steps).
+    for (let i = 0, done = false; i < 450 && !done; i++) {
+      done = e.update(1 / 15);
       if (e.under) e.under(tr);
-      for (const c of sim) if (c.vis) tr(c.x, c.y, c.s, c.c, c.a);
+      for (let k = 0; k < sim.length; k++) {
+        const c = sim[k]; if (!c.vis || c.a <= 0.004) continue;
+        const x = c.x, y = c.y; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
       if (e.over) e.over(tr);
     }
   } catch (err) { x0 = -1e9; }
@@ -1292,6 +1330,11 @@ async function beginIn(name) {
   if (g !== gen) return;
   art = a.cells; B = a.B;
   if (COLOR_CHANGE !== "off") nextPalette();
+  if (RANDOM_DIR && a.gb) {
+    gradDir = pickOther(GRAD_DIRS, gradDir);
+    const param = makeParam(...a.gb, gradDir);
+    for (const c of a.cells) if (c.g != null) c.g = param(c.x, c.y);
+  }
   if (LIVE_COLORS) recolor(art);
   if (!art.length) { msg = "Add some words or a logo from the TermWall menu > Customize..."; chars = []; cur = null; fullRegion(); render(); return; }
   msg = null; chars = freshChars();
@@ -1306,7 +1349,7 @@ function beginHold() {
   // Tell the app the art is sitting still (it uses this frame as the macOS wallpaper for smooth Space switching).
   try { window.webkit.messageHandlers.termwall.postMessage({ phase: "hold", weight: String(lastWeight) }); } catch (e) {}
   const h = holdSecs();
-  if (h > 3) sleepFor(h * 500, beginShine); else sleepFor(h * 1000, beginOut);
+  if (h > 3 && SHINE !== "off") sleepFor(h * 500, beginShine); else sleepFor(h * 1000, beginOut);
   flowWhileHolding();
 }
 // While the art holds still nothing is drawn, unless the gradient flows: then redraw it gently.
@@ -1321,14 +1364,46 @@ function flowWhileHolding() {
     recolor(art); for (const c of chars) cp(c.c, c.fc); render();
   }, iv);
 }
+// The shine while the art holds: a band (or a thin outline) of light passing over it.
+const SHINES = ["sweep", "sweep2", "right", "left", "down", "up", "box", "circle", "diamond", "sparkle"];
+const SHINE = C.shine === "off" || C.shine === "random" || SHINES.includes(C.shine) ? C.shine : "sweep";
+let lastShine = "";
+function shineShape(name) {
+  const cx = B.cx, cy = B.cy;
+  // d(c): how far along the shine's path a character is; w: band half-width; dur: seconds
+  switch (name) {
+    case "sweep2": return { d: c => (c.tx - B.x0) + (B.y1 - c.ty) * 2, span: B.w + B.h * 2, w: 7, dur: 1.6 };
+    case "right": return { d: c => c.tx - B.x0, span: B.w, w: 6, dur: 1.4 };
+    case "left": return { d: c => B.x1 - c.tx, span: B.w, w: 6, dur: 1.4 };
+    case "down": return { d: c => (c.ty - B.y0) * K, span: B.h * K, w: 4, dur: 1.1 };
+    case "up": return { d: c => (B.y1 - c.ty) * K, span: B.h * K, w: 4, dur: 1.1 };
+    case "box": return { d: c => Math.max(Math.abs(c.tx - cx), Math.abs(c.ty - cy) * K), span: Math.max(B.w / 2, B.h / 2 * K), w: 2.2, dur: 1.4, from: 0 };
+    case "circle": return { d: c => Math.hypot(c.tx - cx, (c.ty - cy) * K), span: Math.hypot(B.w / 2, B.h / 2 * K), w: 2.2, dur: 1.4, from: 0 };
+    case "diamond": return { d: c => Math.abs(c.tx - cx) + Math.abs(c.ty - cy) * K, span: B.w / 2 + B.h / 2 * K, w: 2.2, dur: 1.4, from: 0 };
+    default: return { d: c => (c.tx - B.x0) + (c.ty - B.y0) * 2, span: B.w + B.h * 2, w: 7, dur: 1.6 };
+  }
+}
 function beginShine() {
   phase = "shine";
-  const span = B.w + B.h * 2 + 24; let t = 0;
-  cur = { update(dt) {
-    t += dt; const b = -12 + t * span / 1.6;
-    for (const c of chars) { const d = (c.tx - B.x0) + (c.ty - B.y0) * 2, i = clamp(1 - Math.abs(d - b) / 7); mixc(c.c, c.fc, WHITE, 0.5 * i * i); }
-    return b > span;
-  } };
+  const name = SHINE === "random" ? (lastShine = pickOther(SHINES, lastShine)) : SHINE;
+  let t = 0;
+  if (name === "sparkle") {
+    // Characters twinkle one by one at random moments.
+    const DUR = 1.6; chars.forEach(c => { c.tw = R() * DUR; });
+    cur = { update(dt) {
+      t += dt;
+      for (const c of chars) { const i = clamp(1 - Math.abs(t - c.tw) / 0.16); mixc(c.c, c.fc, WHITE, 0.6 * i * i); }
+      return t > DUR + 0.2;
+    } };
+  } else {
+    const sh = shineShape(name), start = sh.from === 0 ? 0 : -sh.w * 1.5, end = sh.span + sh.w * 1.5;
+    chars.forEach(c => { c.sd = sh.d(c); });
+    cur = { update(dt) {
+      t += dt; const b = start + (end - start) * t / sh.dur;
+      for (const c of chars) { const i = clamp(1 - Math.abs(c.sd - b) / sh.w); mixc(c.c, c.fc, WHITE, 0.5 * i * i); }
+      return b > end;
+    } };
+  }
   wake();
 }
 function afterShine() { phase = "hold2"; cur = null; chars.forEach(c => cp(c.c, c.fc)); render(); sleepFor(Math.max(500, holdSecs() * 500 - 1600), beginOut); flowWhileHolding(); }
@@ -1367,6 +1442,7 @@ function loop(now, timed) {
   if (!timed && cap > 0 && now - last < 1000 / cap - 1.5) return;
   const dt = Math.min(0.1, (now - last) / 1000) * SPEED;
   last = now;
+  if (bgT < 1) { stepBackground(dt); if (FLOW <= 0) recolor(art); }   // shadows follow the background
   if (FLOW > 0 && art.length) { flowPhase += dt * FLOW_RATE; recolor(art); }
   const done = cur ? cur.update(dt) : true;
   flash = Math.max(0, flash - dt * 2.2);
@@ -1439,7 +1515,7 @@ window.termwall = {
     return out;
   },
   // Testing: the current palette, a few art colours and where the flowing gradient is.
-  colors() { const r = c => c.map(Math.round); return { stops: STOPS.map(r), accent: r(ACC), art: art.slice(-3).map(c => r(c.color)), held: chars.slice(-1).map(c => r(c.c)), flowPhase: +flowPhase.toFixed(3), phase }; },
+  colors() { const r = c => c.map(Math.round); return { stops: STOPS.map(r), accent: r(ACC), art: art.slice(-3).map(c => r(c.color)), held: chars.slice(-1).map(c => r(c.c)), flowPhase: +flowPhase.toFixed(3), phase, bg: r(BG), dir: gradDir }; },
   capture() { fullRegion(); render(); return cv.toDataURL("image/png"); },
   // Testing: step an effect deterministically and draw it at time `secs`.
   sim(name, secs) {

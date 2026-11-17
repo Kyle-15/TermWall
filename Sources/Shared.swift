@@ -30,6 +30,17 @@ let weightOptions: [(name: String, value: String)] = [
     ("Semibold", "600"), ("Bold", "700"), ("Heavy", "800"), ("Black", "900"),
 ]
 
+let gradientDirections: [(name: String, value: String)] = [
+    ("Diagonal ↘", "diagonal"), ("Diagonal ↗", "diagonal2"), ("Horizontal", "horizontal"), ("Vertical", "vertical"),
+    ("Radial", "radial"), ("From a corner", "corner"), ("From the middle out", "mirror"), ("Around the center", "conic"),
+    ("Diamond", "diamond"), ("Rings", "rings"), ("Stripes", "stripes"), ("Waves", "waves"), ("Random each animation", "random"),
+]
+let shineStyles: [(name: String, value: String)] = [
+    ("Diagonal sweep ↘", "sweep"), ("Diagonal sweep ↗", "sweep2"), ("Slide left → right", "right"), ("Slide right → left", "left"),
+    ("Slide top → bottom", "down"), ("Slide bottom → top", "up"), ("Growing square outline", "box"), ("Growing circle outline", "circle"),
+    ("Growing diamond outline", "diamond"), ("Sparkle", "sparkle"), ("Random each time", "random"), ("Off", "off"),
+]
+
 struct Theme { let name: String; let bg: String; let gradient: [String]; let accent: String }
 let themes: [Theme] = [
     Theme(name: "Tokyo Night", bg: "#1a1b26", gradient: ["#7aa2f7", "#bb9af7", "#7dcfff"], accent: "#9ece6a"),
@@ -60,14 +71,16 @@ struct WallConfig: Codable, Equatable {
     var background: String = "#1a1b26"
     var gradient: [String] = ["#7aa2f7", "#bb9af7", "#7dcfff"]
     var accent: String = "#9ece6a"
-    var gradientDirection: String = "diagonal"
+    var gradientDirection: String = "diagonal"  // a direction or pattern (see gradientDirections), or "random" each animation
     var colorChange: String = "off"            // "off" | "hue" (shift your colours) | "themes" (random theme), each animation
     var colorFlow: Double = 0                  // gradient moving across the art: 0 = still, 1 = fast
+    var colorChangeBackground: Bool = false    // with colorChange: the background changes too (fades)
     var size: Double = 0.6
     var cellSize: Double = 14
     var effects: [String] = allEffects
     var holdSeconds: Double = 8
     var speed: Double = 1
+    var shine: String = "sweep"                // light passing over the held art: a style, "random" or "off"
     var flashes: Double = 1                    // flashing lights: 0 = off, 1 = full
     var asciiArt: String = ""
     // Performance & battery

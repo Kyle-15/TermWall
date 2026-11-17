@@ -113,14 +113,17 @@ enum WallpaperMatch {
         let old = stills[key(screen)]
         stills[key(screen)] = url
         apply(background: background)
-        // Other Spaces may still show the previous picture until they're visited; keep it a while.
-        if let old, old != url { DispatchQueue.main.asyncAfter(deadline: .now() + 600) { if !stills.values.contains(old) { keepOrDelete(old) } } }
+        // Other Spaces may still show the previous picture until they're visited, so keep that one too;
+        // anything older for this screen goes.
+        prune(screen: key(screen), keep: [url, old].compactMap { $0 })
     }
 
-    /// Deletes an old still unless a screen in the current Space still uses it.
-    private static func keepOrDelete(_ u: URL) {
-        if NSScreen.screens.contains(where: { NSWorkspace.shared.desktopImageURL(for: $0) == u }) { return }
-        try? FileManager.default.removeItem(at: u)
+    /// Deletes this screen's old stills except the ones to keep.
+    static func prune(screen k: String, keep: [URL]) {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: supportDir, includingPropertiesForKeys: nil) else { return }
+        let names = Set(keep.map(\.lastPathComponent))
+        for f in files where f.lastPathComponent.hasPrefix("desktop-\(k)-") && !names.contains(f.lastPathComponent) { try? fm.removeItem(at: f) }
     }
 
     /// Puts the user's own wallpaper back (if TermWall changed it).
@@ -243,15 +246,15 @@ final class WallpaperController: NSObject, WKNavigationDelegate, WKScriptMessage
         webView.evaluateJavaScript("window.termwall && termwall.setPaused(\(sentPause[i]))", completionHandler: nil)
     }
 
-    /// The page holds its art still: take a picture of it for the macOS wallpaper (once per weight,
-    /// at most every 20 s per screen) so a Space sliding in shows the art, not an old wallpaper.
-    private var lastStill: [String: (tag: String, at: Date)] = [:]
+    /// The page holds its art still: take a picture of it for the macOS wallpaper, once per screen after
+    /// each start or Apply (it only covers a ~0.05 s blink, so it needn't follow every weight or colour).
+    private var lastStill: Set<String> = []
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard cfg.matchWallpaper, WallpaperMatch.enabled, let wv = m.webView, let i = webViews.firstIndex(of: wv),
               let screen = windows[i].screen, let body = m.body as? [String: Any], (body["phase"] as? String) == "hold" else { return }
         let k = WallpaperMatch.key(screen), tag = (body["weight"] as? String) ?? ""
-        if let l = lastStill[k], l.tag == tag || Date().timeIntervalSince(l.at) < 20 { return }
-        lastStill[k] = (tag, Date())
+        if lastStill.contains(k) { return }
+        lastStill.insert(k)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak wv] in
             guard let self, let wv, self.webViews.contains(wv) else { return }
             let conf = WKSnapshotConfiguration(); conf.afterScreenUpdates = true
@@ -456,12 +459,13 @@ struct SettingsView: View {
                         ColorPicker("", selection: gradColor(2), supportsOpacity: false).labelsHidden()
                     }
                     Picker("Gradient direction", selection: $model.cfg.gradientDirection) {
-                        Text("Diagonal").tag("diagonal"); Text("Horizontal").tag("horizontal")
-                        Text("Vertical").tag("vertical"); Text("Radial").tag("radial")
+                        ForEach(gradientDirections, id: \.value) { Text($0.name).tag($0.value) }
                     }
                     Picker("New colors each animation", selection: $model.cfg.colorChange) {
                         Text("Off").tag("off"); Text("Shift your colors").tag("hue"); Text("Random theme").tag("themes")
                     }
+                    Toggle("Change the background too (fades)", isOn: $model.cfg.colorChangeBackground)
+                        .disabled(model.cfg.colorChange == "off")
                     LabeledContent("Flowing gradient") {
                         HStack {
                             Slider(value: $model.cfg.colorFlow, in: 0...1, step: 0.05)
@@ -499,6 +503,9 @@ struct SettingsView: View {
                     }
                     LabeledContent("Speed") {
                         HStack { Slider(value: $model.cfg.speed, in: 0.3...2.5); Text(String(format: "%.1f×", model.cfg.speed)).monospacedDigit().frame(width: 44) }
+                    }
+                    Picker("Shine while holding", selection: $model.cfg.shine) {
+                        ForEach(shineStyles, id: \.value) { Text($0.name).tag($0.value) }
                     }
                     LabeledContent("Flashing lights") {
                         HStack {
