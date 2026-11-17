@@ -227,6 +227,7 @@ final class WallpaperController: NSObject, WKNavigationDelegate, WKScriptMessage
             let wv = WKWebView(frame: NSRect(origin: .zero, size: screen.frame.size), configuration: conf)
             wv.autoresizingMask = [.width, .height]
             wv.underPageBackgroundColor = bg
+            wv.setValue(false, forKey: "drawsBackground")   // no white frame before the page paints; the window colour shows instead
             wv.navigationDelegate = self
             w.contentView = wv
             wv.loadFileURL(htmlURL, allowingReadAccessTo: htmlURL.deletingLastPathComponent())

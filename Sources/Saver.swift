@@ -85,6 +85,7 @@ final class TermWallSaverView: ScreenSaverView, WKNavigationDelegate {
         let wv = WKWebView(frame: bounds, configuration: conf)
         wv.autoresizingMask = [.width, .height]
         wv.underPageBackgroundColor = background
+        wv.setValue(false, forKey: "drawsBackground")   // no white frame before the page paints; the window colour shows instead
         wv.navigationDelegate = self
         // The screen saver host shows this view through a remote layer, so WebKit can wrongly decide the
         // window is hidden and stop handing out animation frames. Turn that check off (WebKit SPI, if present).

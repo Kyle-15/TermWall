@@ -7,8 +7,8 @@
   <key>CFBundleIdentifier</key><string>local.termwall.saver</string>
   <key>CFBundleExecutable</key><string>TermWall</string>
   <key>CFBundlePackageType</key><string>BNDL</string>
-  <key>CFBundleShortVersionString</key><string>1.4.1</string>
-  <key>CFBundleVersion</key><string>6</string>
+  <key>CFBundleShortVersionString</key><string>1.4.2</string>
+  <key>CFBundleVersion</key><string>7</string>
   <key>NSPrincipalClass</key><string>TermWallSaverView</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
 </dict>
