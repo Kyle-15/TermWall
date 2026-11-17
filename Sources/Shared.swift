@@ -75,6 +75,7 @@ struct WallConfig: Codable, Equatable {
     var pauseWhenCovered: Bool = true
     var pauseOnBattery: Bool = false
     var pauseInLowPower: Bool = true
+    var matchWallpaper: Bool = true            // set the macOS wallpaper to the background colour so switching Spaces doesn't flash it
 
     /// Loads config.json, filling anything missing with defaults and upgrading older files.
     static func load() -> WallConfig {

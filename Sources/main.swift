@@ -45,6 +45,120 @@ func onBatteryPower() -> Bool {
     return (type as String) == "Battery Power"
 }
 
+// MARK: - Matching macOS wallpaper
+
+/// For the first instant of a Space switch macOS shows nothing but each Space's own wallpaper, so the old
+/// wallpaper blinks. Setting the macOS wallpaper to a still of TermWall (its held art, or the plain
+/// background until there is one) hides that. The user's wallpaper settings are backed up first and put
+/// back on quit.
+enum WallpaperMatch {
+    static let store = URL(fileURLWithPath: realHome)
+        .appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
+    static let backup = supportDir.appendingPathComponent("wallpaper-backup.plist")
+    static let originals = supportDir.appendingPathComponent("wallpaper-backup.json")
+    /// Only the one running TermWall app touches the wallpaper (not the debug instances).
+    static var enabled = false
+    /// Latest still of TermWall per screen (keyed by display ID).
+    static var stills: [String: URL] = [:]
+    private static var background = "#000000"
+
+    static func key(_ s: NSScreen) -> String { "\((s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0)" }
+
+    private static func solidURL(_ hex: String) -> URL {
+        supportDir.appendingPathComponent("desktop-\(hex.replacingOccurrences(of: "#", with: "").lowercased()).png")
+    }
+    private static func isOurs(_ u: URL?) -> Bool {
+        guard let u else { return false }
+        return u.deletingLastPathComponent().standardizedFileURL == supportDir.standardizedFileURL && u.lastPathComponent.hasPrefix("desktop-")
+    }
+
+    /// Makes the macOS wallpaper on every screen of the current Space match TermWall.
+    static func apply(background hex: String) {
+        guard enabled else { return }
+        let fm = FileManager.default
+        if hex != background { stills.removeAll(); background = hex }
+        let solid = solidURL(hex), color = NSColor(hex: hex)
+        if !fm.fileExists(atPath: solid.path) {
+            let img = NSImage(size: NSSize(width: 16, height: 16))
+            img.lockFocus(); color.setFill(); NSRect(x: 0, y: 0, width: 16, height: 16).fill(); img.unlockFocus()
+            guard let png = pngData(img, maxSide: 16), (try? png.write(to: solid)) != nil else { return }
+        }
+        let screens = NSScreen.screens
+        let want = screens.map { stills[key($0)] ?? solid }
+        let current = screens.map { NSWorkspace.shared.desktopImageURL(for: $0) }
+        if zip(current, want).allSatisfy({ $0 == $1 }) { return }
+        // Back up the user's wallpaper before the first change (or again if they picked a new one meanwhile).
+        let saved = (try? Data(contentsOf: originals)).flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+        let userChanged = current.contains { u in u != nil && !isOurs(u) && !saved.contains(u!.path) }
+        if !fm.fileExists(atPath: backup.path) || userChanged {
+            try? fm.removeItem(at: backup)
+            try? fm.copyItem(at: store, to: backup)
+            let paths = current.compactMap { u in isOurs(u) ? nil : u?.path }
+            try? JSONEncoder().encode(paths).write(to: originals)
+        }
+        for (i, screen) in screens.enumerated() where current[i] != want[i] {
+            try? NSWorkspace.shared.setDesktopImageURL(want[i], for: screen, options: [
+                .imageScaling: NSImageScaling.scaleAxesIndependently.rawValue, .allowClipping: true, .fillColor: color])
+        }
+    }
+
+    /// Saves a still of TermWall for one screen and makes it that screen's wallpaper.
+    static func setStill(_ image: NSImage, for screen: NSScreen, tag: String) {
+        guard enabled else { return }
+        let px = max(screen.frame.width, screen.frame.height) * screen.backingScaleFactor
+        let safeTag = tag.filter { $0.isLetter || $0.isNumber }
+        // A new name per picture: macOS caches wallpapers by file name.
+        let url = supportDir.appendingPathComponent("desktop-\(key(screen))-\(safeTag)-\(Int(Date().timeIntervalSince1970)).png")
+        guard let png = pngData(image, maxSide: px), (try? png.write(to: url)) != nil else { return }
+        let old = stills[key(screen)]
+        stills[key(screen)] = url
+        apply(background: background)
+        // Other Spaces may still show the previous picture until they're visited; keep it a while.
+        if let old, old != url { DispatchQueue.main.asyncAfter(deadline: .now() + 600) { if !stills.values.contains(old) { keepOrDelete(old) } } }
+    }
+
+    /// Deletes an old still unless a screen in the current Space still uses it.
+    private static func keepOrDelete(_ u: URL) {
+        if NSScreen.screens.contains(where: { NSWorkspace.shared.desktopImageURL(for: $0) == u }) { return }
+        try? FileManager.default.removeItem(at: u)
+    }
+
+    /// Puts the user's own wallpaper back (if TermWall changed it).
+    static func restore() {
+        guard enabled else { return }
+        let fm = FileManager.default
+        defer {
+            stills.removeAll()
+            if let files = try? fm.contentsOfDirectory(at: supportDir, includingPropertiesForKeys: nil) {
+                for f in files where f.lastPathComponent.hasPrefix("desktop-") && f.pathExtension == "png" { try? fm.removeItem(at: f) }
+            }
+        }
+        guard fm.fileExists(atPath: backup.path) else { return }
+        if let data = try? Data(contentsOf: backup), (try? data.write(to: store, options: .atomic)) != nil {
+            // The wallpaper agent re-reads its settings when it restarts (macOS relaunches it right away).
+            // It may save its own copy as it quits, so check the settings stuck and try again if not.
+            for _ in 0..<3 {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+                p.arguments = ["WallpaperAgent"]
+                try? p.run(); p.waitUntilExit()
+                Thread.sleep(forTimeInterval: 0.8)
+                let now = NSScreen.screens.map { NSWorkspace.shared.desktopImageURL(for: $0) }
+                if !now.contains(where: { isOurs($0) }) { break }
+                try? data.write(to: store, options: .atomic)
+            }
+        } else if let data = try? Data(contentsOf: originals), let paths = try? JSONDecoder().decode([String].self, from: data), let first = paths.first {
+            for screen in NSScreen.screens { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: first), for: screen, options: [:]) }
+        }
+        try? fm.removeItem(at: backup)
+        try? fm.removeItem(at: originals)
+    }
+
+    static func sync(_ cfg: WallConfig) {
+        if cfg.matchWallpaper { apply(background: cfg.background) } else { restore() }
+    }
+}
+
 // MARK: - Desktop windows
 
 final class WallWindow: NSWindow {
@@ -52,7 +166,14 @@ final class WallWindow: NSWindow {
     override var canBecomeMain: Bool { false }
 }
 
-final class WallpaperController: NSObject, WKNavigationDelegate {
+/// Forwards page messages without the content controller keeping the controller alive.
+final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ t: WKScriptMessageHandler) { target = t }
+    func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) { target?.userContentController(c, didReceive: m) }
+}
+
+final class WallpaperController: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private(set) var windows: [NSWindow] = []
     private var webViews: [WKWebView] = []
     private var sentPause: [Bool] = []
@@ -74,8 +195,10 @@ final class WallpaperController: NSObject, WKNavigationDelegate {
     func rebuild() {
         for w in windows { w.orderOut(nil); w.close() }
         windows.removeAll(); webViews.removeAll(); sentPause.removeAll()
+        lastStill.removeAll()
 
         cfg = WallConfig.load()
+        WallpaperMatch.sync(cfg)
         var js = injectionScript(cfg)
         if let fe = forceEffect { js += "window.TERMWALL_FORCE_EFFECT = \"\(fe)\";" }
         let bg = NSColor(hex: cfg.background)
@@ -85,7 +208,9 @@ final class WallpaperController: NSObject, WKNavigationDelegate {
             let w = WallWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             w.isReleasedWhenClosed = false
             w.setFrame(screen.frame, display: false)
-            w.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
+            // Just below the desktop icons rather than at the wallpaper's own level: macOS leaves windows at the
+            // wallpaper level out of the Space-switch animation (measured: 0.45 s gap), but keeps this one in.
+            w.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) - 1)
             w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
             w.ignoresMouseEvents = true
             w.isOpaque = true
@@ -97,6 +222,7 @@ final class WallpaperController: NSObject, WKNavigationDelegate {
             highRefresh = setWebKitFeature(conf.preferences, key: "PreferPageRenderingUpdatesNear60FPSEnabled", enabled: false)
             let script = js + "window.TERMWALL_HZ = \(screen.maximumFramesPerSecond); window.TERMWALL_PAUSED = \(startPaused);"
             conf.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            conf.userContentController.add(WeakMessageHandler(self), name: "termwall")
             conf.suppressesIncrementalRendering = true
             let wv = WKWebView(frame: NSRect(origin: .zero, size: screen.frame.size), configuration: conf)
             wv.autoresizingMask = [.width, .height]
@@ -114,6 +240,25 @@ final class WallpaperController: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let i = webViews.firstIndex(of: webView) else { return }
         webView.evaluateJavaScript("window.termwall && termwall.setPaused(\(sentPause[i]))", completionHandler: nil)
+    }
+
+    /// The page holds its art still: take a picture of it for the macOS wallpaper (once per weight,
+    /// at most every 20 s per screen) so a Space sliding in shows the art, not an old wallpaper.
+    private var lastStill: [String: (tag: String, at: Date)] = [:]
+    func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        guard cfg.matchWallpaper, WallpaperMatch.enabled, let wv = m.webView, let i = webViews.firstIndex(of: wv),
+              let screen = windows[i].screen, let body = m.body as? [String: Any], (body["phase"] as? String) == "hold" else { return }
+        let k = WallpaperMatch.key(screen), tag = (body["weight"] as? String) ?? ""
+        if let l = lastStill[k], l.tag == tag || Date().timeIntervalSince(l.at) < 20 { return }
+        lastStill[k] = (tag, Date())
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak wv] in
+            guard let self, let wv, self.webViews.contains(wv) else { return }
+            let conf = WKSnapshotConfiguration(); conf.afterScreenUpdates = true
+            wv.takeSnapshot(with: conf) { img, _ in
+                guard let img, let s = wv.window?.screen else { return }
+                WallpaperMatch.setStill(img, for: s, tag: tag)
+            }
+        }
     }
 
     func basePaused() -> Bool {
@@ -317,6 +462,11 @@ struct SettingsView: View {
                         Text("Blocks ▟█▙").tag("blocks"); Text("ASCII @#*:.").tag("ascii")
                     }.pickerStyle(.segmented)
                     Toggle("Drop shadow", isOn: $model.cfg.shadow)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Toggle("Smooth Space switching", isOn: $model.cfg.matchWallpaper)
+                        Text("Sets your macOS wallpaper to the background color while TermWall runs, so switching Spaces doesn't flash your old wallpaper. Quitting TermWall puts yours back.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     LabeledContent("Art size") { Slider(value: $model.cfg.size, in: 0.2...0.95) }
                     LabeledContent("Character size") {
                         HStack { Slider(value: $model.cfg.cellSize, in: 8...28, step: 1); Text("\(Int(model.cfg.cellSize)) pt").monospacedDigit().frame(width: 44) }
@@ -480,6 +630,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 {
             NSApp.terminate(nil); return
         }
+        WallpaperMatch.enabled = ProcessInfo.processInfo.environment["TERMWALL_NOWALL"] == nil
         setupMenu()
         wall.rebuild()
 
@@ -500,6 +651,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self?.wall.refreshPause() }
         }
         ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            if let cfg = self?.wall.cfg, cfg.matchWallpaper { WallpaperMatch.apply(background: cfg.background) }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self?.wall.refreshPause() }
         }
         let dn = DistributedNotificationCenter.default()
@@ -604,6 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(); a.runModal()
     }
     @objc func quit() { NSApp.terminate(nil) }
+    func applicationWillTerminate(_ note: Notification) { WallpaperMatch.restore() }
 
     @objc func toggleLogin() {
         let fm = FileManager.default

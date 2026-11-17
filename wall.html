@@ -1247,6 +1247,8 @@ function beginHold() {
   phase = "hold"; cur = null; flash = 0;
   chars.forEach(c => { c.x = c.tx; c.y = c.ty; c.s = c.fin; cp(c.c, c.fc); c.vis = true; c.a = 1; });
   artRegion(); render();
+  // Tell the app the art is sitting still (it uses this frame as the macOS wallpaper for smooth Space switching).
+  try { window.webkit.messageHandlers.termwall.postMessage({ phase: "hold", weight: String(lastWeight) }); } catch (e) {}
   const h = holdSecs();
   if (h > 3) sleepFor(h * 500, beginShine); else sleepFor(h * 1000, beginOut);
 }

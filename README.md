@@ -19,6 +19,7 @@ Inspired by the look of the Omarchy screen saver.
 - **Themes:** Tokyo Night, Catppuccin, Gruvbox, Nord, Everforest, Kanagawa, Rosé Pine, Matte Black, Matrix, Synthwave, or your own colors.
 - **Screen saver too:** the same animation and settings as a macOS screen saver. The desktop animation pauses while the screen saver is showing.
 - **Flashing lights setting:** turn the screen flashes, lightning, bursts and glitch flicker down (Soft), off, or anywhere in between. With it off, every effect still plays, just without flashing.
+- **Smooth Space switching:** TermWall's window sits just below your desktop icons, where macOS keeps it on screen while Spaces switch (Ctrl ←/→). For the one instant macOS shows only the wallpaper, TermWall sets your macOS wallpaper to a still of its art, so your old wallpaper never flashes. Quitting puts your wallpaper back. You can turn the wallpaper part off in Customize → Look.
 - **Multiple screens:** every display gets its own copy, running at that display's refresh rate.
 - **Light on power:** drawn on the GPU in one call per frame, only over the part of the screen an effect actually uses, and nothing at all is drawn between animations. Below your screen's refresh rate it wakes only when a frame is due, so macOS redraws the desktop less often. It can pause by itself when a game or window covers the desktop, on battery, or in Low Power Mode, and there are frame-rate, resolution and particle settings (with Max / Balanced / Battery saver presets).
 
