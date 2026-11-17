@@ -459,6 +459,17 @@ struct SettingsView: View {
                         Text("Diagonal").tag("diagonal"); Text("Horizontal").tag("horizontal")
                         Text("Vertical").tag("vertical"); Text("Radial").tag("radial")
                     }
+                    Picker("New colors each animation", selection: $model.cfg.colorChange) {
+                        Text("Off").tag("off"); Text("Shift your colors").tag("hue"); Text("Random theme").tag("themes")
+                    }
+                    LabeledContent("Flowing gradient") {
+                        HStack {
+                            Slider(value: $model.cfg.colorFlow, in: 0...1, step: 0.05)
+                            Text(model.cfg.colorFlow < 0.01 ? "Off" : model.cfg.colorFlow < 0.35 ? "Slow" : model.cfg.colorFlow < 0.7 ? "Medium" : "Fast").frame(width: 56)
+                        }
+                    }
+                    Text("A flowing gradient keeps moving while your art holds still, so it uses a little more power than Off.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Picker("Character style", selection: $model.cfg.style) {
                         Text("Blocks ▟█▙").tag("blocks"); Text("ASCII @#*:.").tag("ascii")
                     }.pickerStyle(.segmented)

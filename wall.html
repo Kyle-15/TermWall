@@ -39,6 +39,8 @@ const SPEED = Math.min(5, Math.max(0.1, +C.speed || 1));
 const DETAIL = Math.min(1, Math.max(0.25, +C.detail || 1));
 // Flashing lights: 0 = off, 1 = full. Scales screen flashes, lightning, bursts and glitch flicker.
 if (QS.has("flashes")) C.flashes = +QS.get("flashes");
+if (QS.has("colorChange")) C.colorChange = QS.get("colorChange");
+if (QS.has("colorFlow")) C.colorFlow = +QS.get("colorFlow");
 const FL = Math.min(1, Math.max(0, C.flashes == null || isNaN(+C.flashes) ? 1 : +C.flashes));
 document.documentElement.style.background = C.background;
 document.body.style.background = C.background;
@@ -91,6 +93,52 @@ function grad(t, o = [0, 0, 0]) {
   const s = t * (STOPS.length - 1), i = Math.min(STOPS.length - 2, Math.floor(s));
   return mixc(o, STOPS[i], STOPS[i + 1], s - i);
 }
+// ---- Changing colours: a new palette each animation, and/or a gradient that flows across the art.
+const BASE_STOPS = STOPS.map(c => c.slice()), BASE_ACC = ACC.slice();
+const COLOR_CHANGE = ["hue", "themes"].includes(C.colorChange) ? C.colorChange : "off";
+const FLOW = clamp(+C.colorFlow || 0);                 // 0 = still; 1 = one full sweep every ~4 s
+const FLOW_RATE = FLOW * 0.25, FLOW_FPS = Math.round(6 + 8 * FLOW);   // gradient lengths per second; frame rate while the art holds (a slow drift needs few frames)
+const LIVE_COLORS = COLOR_CHANGE !== "off" || FLOW > 0;
+const THEME_PALETTES = [
+  ["#7aa2f7", "#bb9af7", "#7dcfff", "#9ece6a"], ["#89b4fa", "#cba6f7", "#f5c2e7", "#a6e3a1"],
+  ["#fabd2f", "#fe8019", "#fb4934", "#b8bb26"], ["#88c0d0", "#81a1c1", "#b48ead", "#a3be8c"],
+  ["#a7c080", "#83c092", "#7fbbb3", "#dbbc7f"], ["#7e9cd8", "#957fb8", "#d27e99", "#98bb6c"],
+  ["#ebbcba", "#c4a7e7", "#9ccfd8", "#31748f"], ["#f2f2f2", "#bdbdbd", "#7a7a7a", "#f59e0b"],
+  ["#b7ffcf", "#00ff66", "#00a344", "#00ff66"], ["#ff7edb", "#fe4450", "#fede5d", "#36f9f6"],
+].map(p => p.map(hex));
+function rgbToHsl(c) {
+  const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h / 6, s, l];
+}
+function hslToRgb(h, s, l, o = [0, 0, 0]) {
+  const f = n => { const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
+  o[0] = f(0); o[1] = f(8); o[2] = f(4); return o;
+}
+const hueShift = (c, dh) => { const [h, s2, l] = rgbToHsl(c); return hslToRgb((h + dh + 1) % 1, s2, l); };
+let paletteN = 0, lastTheme = -1, flowPhase = 0;
+function setPalette(stops, acc) { STOPS.length = 0; stops.forEach(c => STOPS.push(c.slice())); cp(ACC, acc); }
+function nextPalette() {
+  paletteN++;
+  if (COLOR_CHANGE === "hue") {
+    const dh = (paletteN * 0.381966) % 1;                // golden-ratio steps: every animation looks clearly different
+    setPalette(BASE_STOPS.map(c => hueShift(c, dh)), hueShift(BASE_ACC, dh));
+  } else if (COLOR_CHANGE === "themes") {
+    let i; do i = Math.floor(R() * THEME_PALETTES.length); while (i === lastTheme && THEME_PALETTES.length > 1);
+    lastTheme = i; const p = THEME_PALETTES[i]; setPalette(p.slice(0, 3), p[3]);
+  }
+}
+// Re-colour art cells in place (characters share these arrays as their final colour).
+function recolor(cells) {
+  for (const c of cells) {
+    if (c.g == null) continue;                           // logo pixels kept in their original colours
+    let t = c.g + flowPhase; t -= 2 * Math.floor(t / 2); if (t > 1) t = 2 - t;   // mirrored, so no seam
+    grad(t, c.color); if (c.sh) mixc(c.color, BG, c.color, 0.28);
+  }
+}
+
 const FIRE = ["#ffffff", "#fff75d", "#fe650d", "#8a003c", "#510100"].map(hex);
 function fire(t, o) { t = clamp(t); const s = t * (FIRE.length - 1), i = Math.min(FIRE.length - 2, Math.floor(s)); return mixc(o, FIRE[i], FIRE[i + 1], s - i); }
 
@@ -389,7 +437,7 @@ function sample(src, gx, gy, wc, hc, colorOf, useOrig, thr, out, shadowOut) {
       ch = RAMP[Math.min(RAMP.length - 1, 1 + Math.floor(cov[n] * (RAMP.length - 1)))];
     }
     const X = gx + cx, Y = gy + cy;
-    out.push({ x: X, y: Y, ch, color: useOrig ? [col[n * 3], col[n * 3 + 1], col[n * 3 + 2]] : colorOf(X, Y) });
+    out.push(useOrig ? { x: X, y: Y, ch, color: [col[n * 3], col[n * 3 + 1], col[n * 3 + 2]] } : { x: X, y: Y, ch, color: colorOf(X, Y), g: colorOf.param(X, Y) });
   }
   if (blocks && shadowOut) {
     const dy = Math.max(1, Math.round(ny * 0.035)), dx = Math.max(1, Math.round(dy * K));
@@ -400,7 +448,7 @@ function sample(src, gx, gy, wc, hc, colorOf, useOrig, thr, out, shadowOut) {
       const bits = (s(i, j) ? 1 : 0) | (s(i + 1, j) ? 2 : 0) | (s(i, j + 1) ? 4 : 0) | (s(i + 1, j + 1) ? 8 : 0);
       if (!bits) continue;
       const X = gx + cx, Y = gy + cy;
-      shadowOut.push({ x: X, y: Y, ch: QCHARS[bits], color: mixc(colorOf(X, Y), BG, colorOf(X, Y), 0.28) });
+      shadowOut.push({ x: X, y: Y, ch: QCHARS[bits], color: mixc(colorOf(X, Y), BG, colorOf(X, Y), 0.28), g: colorOf.param(X, Y), sh: true });
     }
   }
 }
@@ -408,15 +456,18 @@ function sample(src, gx, gy, wc, hc, colorOf, useOrig, thr, out, shadowOut) {
 function makeColorFn(x0, y0, x1, y1) {
   const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   const rmax = Math.hypot(w / 2, h / 2 * K) || 1;
-  return (x, y) => {
+  const param = (x, y) => {
     const u = (x - x0) / w, v = (y - y0) / h;
     switch (C.gradientDirection) {
-      case "horizontal": return grad(u);
-      case "vertical": return grad(v);
-      case "radial": return grad(Math.hypot(x - cx, (y - cy) * K) / rmax);
-      default: return grad(u * 0.6 + v * 0.4);
+      case "horizontal": return clamp(u);
+      case "vertical": return clamp(v);
+      case "radial": return clamp(Math.hypot(x - cx, (y - cy) * K) / rmax);
+      default: return clamp(u * 0.6 + v * 0.4);
     }
   };
+  const fn = (x, y) => grad(param(x, y));
+  fn.param = param;                                      // where a cell sits on the gradient, for re-colouring
+  return fn;
 }
 
 let logoInk;
@@ -436,7 +487,7 @@ async function buildArt(weight) {
     const w = Math.max(...ls.map(l => [...l].length)), h = ls.length;
     const x0 = Math.floor((cols - w) / 2), y0 = Math.floor((rows - h) / 2);
     const colorOf = makeColorFn(x0, y0, x0 + w - 1, y0 + h - 1);
-    ls.forEach((l, j) => [...l].forEach((ch, i) => { if (ch !== " ") cells.push({ x: x0 + i, y: y0 + j, ch, color: colorOf(x0 + i, y0 + j) }); }));
+    ls.forEach((l, j) => [...l].forEach((ch, i) => { if (ch !== " ") cells.push({ x: x0 + i, y: y0 + j, ch, color: colorOf(x0 + i, y0 + j), g: colorOf.param(x0 + i, y0 + j) }); }));
     return finishArt(cells);
   }
 
@@ -1240,6 +1291,8 @@ async function beginIn(name) {
   const a = await getArt(w);
   if (g !== gen) return;
   art = a.cells; B = a.B;
+  if (COLOR_CHANGE !== "off") nextPalette();
+  if (LIVE_COLORS) recolor(art);
   if (!art.length) { msg = "Add some words or a logo from the TermWall menu > Customize..."; chars = []; cur = null; fullRegion(); render(); return; }
   msg = null; chars = freshChars();
   const n = name && EFFECTS[name] ? name : pickOther(effectNames(), lastName);
@@ -1254,6 +1307,19 @@ function beginHold() {
   try { window.webkit.messageHandlers.termwall.postMessage({ phase: "hold", weight: String(lastWeight) }); } catch (e) {}
   const h = holdSecs();
   if (h > 3) sleepFor(h * 500, beginShine); else sleepFor(h * 1000, beginOut);
+  flowWhileHolding();
+}
+// While the art holds still nothing is drawn, unless the gradient flows: then redraw it gently.
+let flowTimer = 0;
+function flowWhileHolding() {
+  clearInterval(flowTimer);
+  if (FLOW <= 0) return;
+  const g = gen, iv = 1000 / Math.min(FLOW_FPS, +C.fps || FLOW_FPS); let prev = performance.now();
+  flowTimer = setInterval(() => {
+    if (g !== gen || paused || (phase !== "hold" && phase !== "hold2")) { clearInterval(flowTimer); return; }
+    const now = performance.now(); flowPhase += Math.min(0.2, (now - prev) / 1000) * SPEED * FLOW_RATE; prev = now;
+    recolor(art); for (const c of chars) cp(c.c, c.fc); render();
+  }, iv);
 }
 function beginShine() {
   phase = "shine";
@@ -1265,7 +1331,7 @@ function beginShine() {
   } };
   wake();
 }
-function afterShine() { phase = "hold2"; cur = null; chars.forEach(c => cp(c.c, c.fc)); render(); sleepFor(Math.max(500, holdSecs() * 500 - 1600), beginOut); }
+function afterShine() { phase = "hold2"; cur = null; chars.forEach(c => cp(c.c, c.fc)); render(); sleepFor(Math.max(500, holdSecs() * 500 - 1600), beginOut); flowWhileHolding(); }
 function beginOut() { const ex = EXITS[pick(exitNames())]; measure(ex); cur = ex(chars); phase = "out"; wake(); }
 function afterOut() { phase = "gap"; cur = null; chars = []; flash = 0; render(); sleepFor(600 / SPEED, () => beginIn()); }
 
@@ -1301,6 +1367,7 @@ function loop(now, timed) {
   if (!timed && cap > 0 && now - last < 1000 / cap - 1.5) return;
   const dt = Math.min(0.1, (now - last) / 1000) * SPEED;
   last = now;
+  if (FLOW > 0 && art.length) { flowPhase += dt * FLOW_RATE; recolor(art); }
   const done = cur ? cur.update(dt) : true;
   flash = Math.max(0, flash - dt * 2.2);
   render();
@@ -1327,6 +1394,7 @@ window.termwall = {
     if (paused) return;
     if (pendingWake) { const f = pendingWake; pendingWake = null; f(); }
     else if (phase === "in" || phase === "shine" || phase === "out") wake();
+    if (phase === "hold" || phase === "hold2") flowWhileHolding();
   },
   stats() { return JSON.stringify({ renderer: Rn.name, fps: fpsVal, rafHz, fpsCap: +C.fps || 0, cols, rows, chars: chars.length, phase, effect: lastName, weight: lastWeight, paused, canvas: [cvW, cvH], region: [RX0, RY0, RX1, RY1] }); },
   // Testing: does every effect stay inside the region measured for it, even with uneven frame times?
@@ -1370,6 +1438,8 @@ window.termwall = {
     }
     return out;
   },
+  // Testing: the current palette, a few art colours and where the flowing gradient is.
+  colors() { const r = c => c.map(Math.round); return { stops: STOPS.map(r), accent: r(ACC), art: art.slice(-3).map(c => r(c.color)), held: chars.slice(-1).map(c => r(c.c)), flowPhase: +flowPhase.toFixed(3), phase }; },
   capture() { fullRegion(); render(); return cv.toDataURL("image/png"); },
   // Testing: step an effect deterministically and draw it at time `secs`.
   sim(name, secs) {

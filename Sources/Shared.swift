@@ -61,6 +61,8 @@ struct WallConfig: Codable, Equatable {
     var gradient: [String] = ["#7aa2f7", "#bb9af7", "#7dcfff"]
     var accent: String = "#9ece6a"
     var gradientDirection: String = "diagonal"
+    var colorChange: String = "off"            // "off" | "hue" (shift your colours) | "themes" (random theme), each animation
+    var colorFlow: Double = 0                  // gradient moving across the art: 0 = still, 1 = fast
     var size: Double = 0.6
     var cellSize: Double = 14
     var effects: [String] = allEffects
