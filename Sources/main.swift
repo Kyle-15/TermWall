@@ -232,7 +232,12 @@ final class WallpaperController: NSObject, WKNavigationDelegate {
         windows.removeAll(); webViews.removeAll(); sentPause.removeAll()
 
         cfg = WallConfig.load()
-        let json = (try? JSONEncoder().encode(cfg)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        // Known settings come from cfg; extra keys in config.json (e.g. "exits") are passed to the page as-is.
+        var dict = (try? JSONEncoder().encode(cfg)).flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
+        if let data = try? Data(contentsOf: configURL), let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            for (k, v) in raw where dict[k] == nil { dict[k] = v }
+        }
+        let json = (try? JSONSerialization.data(withJSONObject: dict)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         var js = "window.TERMWALL_CONFIG = \(json);"
         if let logo = logoDataURL(cfg.logoPath) { js += "window.TERMWALL_LOGO = \"\(logo)\";" }
         if let fe = forceEffect { js += "window.TERMWALL_FORCE_EFFECT = \"\(fe)\";" }
@@ -518,7 +523,7 @@ struct SettingsView: View {
                     Toggle("Pause when a game or window covers the desktop", isOn: $model.cfg.pauseWhenCovered)
                     Toggle("Pause on battery power", isOn: $model.cfg.pauseOnBattery)
                     Toggle("Pause in Low Power Mode", isOn: $model.cfg.pauseInLowPower)
-                    Text("Between animations nothing is drawn, so it only uses power while an effect is playing. Paused screens use none.")
+                    Text("Frame rate matters most: anything below your screen's refresh rate saves a lot, because macOS then redraws the desktop less often. Between animations and while paused nothing is drawn at all.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

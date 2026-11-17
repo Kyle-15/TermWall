@@ -5,7 +5,7 @@
 <title>TermWall</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1b26; cursor: none; }
-  canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+  canvas { position: absolute; display: block; image-rendering: pixelated; }
 </style>
 </head>
 <body>
@@ -43,7 +43,8 @@ document.body.style.background = C.background;
 // ===========================================================================
 // Utils
 // ===========================================================================
-const R = Math.random;
+let rs = (Math.random() * 4294967296) >>> 0;   // mulberry32, so a dry run can be replayed exactly
+const R = () => { rs = rs + 0x6D2B79F5 | 0; let t = Math.imul(rs ^ rs >>> 15, 1 | rs); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const ri = (a, b) => a + Math.floor(R() * (b - a + 1));
@@ -103,20 +104,38 @@ const RAMP = " .:-=+*#%@";
 // Grid (all in device pixels so cells are whole pixels and blocks tile seamlessly)
 // ===========================================================================
 const cv = document.getElementById("c");
-let cvW, cvH, cwp, chp, cols, rows, oxp, oyp, FSp, K;
+let cvW, cvH, cwp, chp, cols, rows, oxp, oyp, FSp, K, ds = 1;
+let RX0 = -1, RY0 = -1, RX1 = -1, RY1 = -1;   // cells the canvas currently covers
 
 function setupGrid() {
-  const ds = (window.devicePixelRatio || 1) * clamp(+C.renderScale || 1, 0.25, 1);
-  cvW = Math.max(1, Math.round(innerWidth * ds)); cvH = Math.max(1, Math.round(innerHeight * ds));
-  cv.width = cvW; cv.height = cvH;
+  ds = (window.devicePixelRatio || 1) * clamp(+C.renderScale || 1, 0.25, 1);
+  const fullW = Math.max(1, Math.round(innerWidth * ds)), fullH = Math.max(1, Math.round(innerHeight * ds));
   const FS = Math.max(6, +C.cellSize || 14);
   FSp = FS * ds;
   cwp = Math.max(2, Math.round(FS * 0.6 * ds)); chp = Math.max(4, Math.round(FS * 1.2 * ds));
-  cols = Math.floor(cvW / cwp); rows = Math.floor(cvH / chp);
-  oxp = Math.floor((cvW - cols * cwp) / 2); oyp = Math.floor((cvH - rows * chp) / 2);
+  cols = Math.floor(fullW / cwp); rows = Math.floor(fullH / chp);
+  oxp = Math.floor((fullW - cols * cwp) / 2); oyp = Math.floor((fullH - rows * chp) / 2);
   K = chp / cwp;
   Atlas.dirty = true;
+  RX0 = -1; setRegion(0, 0, cols - 1, rows - 1);
 }
+
+// The canvas only covers the cells an effect touches; the rest of the screen is the page background,
+// which macOS doesn't have to re-composite every frame. Big regions just use the whole screen.
+function setRegion(x0, y0, x1, y1) {
+  x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0));
+  x1 = Math.min(cols - 1, Math.ceil(x1)); y1 = Math.min(rows - 1, Math.ceil(y1));
+  if (x1 < x0 || y1 < y0) { x0 = y0 = x1 = y1 = 0; }
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > cols * rows * 0.6) { x0 = 0; y0 = 0; x1 = cols - 1; y1 = rows - 1; }
+  if (x0 === RX0 && y0 === RY0 && x1 === RX1 && y1 === RY1) return;
+  RX0 = x0; RY0 = y0; RX1 = x1; RY1 = y1;
+  cvW = (x1 - x0 + 1) * cwp; cvH = (y1 - y0 + 1) * chp;
+  cv.width = cvW; cv.height = cvH;
+  const st = cv.style;
+  st.left = (oxp + x0 * cwp) / ds + "px"; st.top = (oyp + y0 * chp) / ds + "px";
+  st.width = cvW / ds + "px"; st.height = cvH / ds + "px";
+}
+const fullRegion = () => setRegion(0, 0, cols - 1, rows - 1);
 
 // Paints one glyph in white into a 2D context at (px, py), cell-sized.
 function paintGlyph(x, s, px, py) {
@@ -228,7 +247,7 @@ void main() { float a = texture(uTex, vUV).a * vCol.a; o = vec4(vCol.rgb * a, a)
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (!n) return;
       gl.useProgram(prog); gl.bindVertexArray(vao);
-      gl.uniform2f(uRes, cvW, cvH); gl.uniform2f(uCell, cwp, chp); gl.uniform2f(uOrigin, oxp, oyp);
+      gl.uniform2f(uRes, cvW, cvH); gl.uniform2f(uCell, cwp, chp); gl.uniform2f(uOrigin, -RX0 * cwp, -RY0 * chp);
       gl.uniform2f(uAtlas, aw, ah); gl.uniform1f(uACols, Atlas.cols);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(uTex, 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, ib);
@@ -250,7 +269,7 @@ function make2D() {
     },
     emit(gx, gy, s, c, a) {
       x.fillStyle = css(c); x.globalAlpha = Math.min(1, a);
-      const px = oxp + Math.round(gx * cwp), py = oyp + Math.round(gy * chp);
+      const px = Math.round((gx - RX0) * cwp), py = Math.round((gy - RY0) * chp);
       if (QBITS[s] === 15) x.fillRect(px, py, cwp, chp); else paintGlyph(x, s, px, py);
     },
     end() { x.globalAlpha = 1; },
@@ -263,7 +282,7 @@ cv.addEventListener("webglcontextlost", e => e.preventDefault());
 cv.addEventListener("webglcontextrestored", () => { Rn = makeGL() || Rn; Atlas.dirty = true; render(); });
 
 const emit = (x, y, s, c, a = 1) => {
-  if (a > 0.004 && s && s !== " " && x > -2 && y > -2 && x < cols + 1 && y < rows + 1) Rn.emit(x, y, s, c, a);
+  if (a > 0.004 && s && s !== " " && x > RX0 - 2 && y > RY0 - 2 && x < RX1 + 1 && y < RY1 + 1) Rn.emit(x, y, s, c, a);
 };
 
 // ===========================================================================
@@ -1170,14 +1189,38 @@ const effectNames = () => { if (EFFECTS[FORCE]) return [FORCE]; const e = (C.eff
 const exitNames = () => { const e = (C.exits || []).filter(n => EXITS[n]); return e.length ? e : ALL_EXITS; };
 function freshChars() { return art.map(c => ({ tx: c.x, ty: c.y, x: c.x, y: c.y, s: c.ch, fin: c.ch, fc: c.color, c: c.color.slice(), a: 1, vis: true })); }
 
+let bodyFlash = false;
 function render() {
-  Rn.begin(flash > 0.003 ? mixc(T3, BG, WHITE, Math.min(0.8, flash)) : BG);
+  const bg = flash > 0.003 ? mixc(T3, BG, WHITE, Math.min(0.8, flash)) : BG;
+  if (flash > 0.003 || bodyFlash) { document.body.style.background = css(bg); bodyFlash = flash > 0.003; }
+  Rn.begin(bg);
   if (cur && cur.under) cur.under(emit);
   for (let i = 0; i < chars.length; i++) { const c = chars[i]; if (c.vis) emit(c.x, c.y, c.s, c.c, c.a); }
   if (cur && cur.over) cur.over(emit);
   if (msg) { const x0 = Math.floor((cols - msg.length) / 2), y = Math.floor(rows / 2), col = mix(BG, grad(0.5), 0.6); for (let i = 0; i < msg.length; i++) emit(x0 + i, y, msg[i], col, 1); }
   Rn.end();
 }
+
+function measure(make) {
+  const seed = rs, saveFlash = flash, sim = freshChars();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const tr = (x, y, s, c, a = 1) => { if (a <= 0.004 || !s || s === " ") return; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; };
+  try {
+    const e = make(sim);
+    for (let i = 0, done = false; i < 900 && !done; i++) {
+      done = e.update(1 / 30);
+      if (e.under) e.under(tr);
+      for (const c of sim) if (c.vis) tr(c.x, c.y, c.s, c.c, c.a);
+      if (e.over) e.over(tr);
+    }
+  } catch (err) { x0 = -1e9; }
+  rs = seed; flash = saveFlash;
+  if (x0 === -1e9) return fullRegion();
+  x0 = Math.min(x0, B.x0); y0 = Math.min(y0, B.y0); x1 = Math.max(x1, B.x1); y1 = Math.max(y1, B.y1);
+  const mx = 4 + (x1 - x0) * 0.08, my = 3 + (y1 - y0) * 0.08;   // effects are random; leave room
+  setRegion(x0 - mx, y0 - my, x1 + mx, y1 + my);
+}
+const artRegion = () => setRegion(B.x0 - 2, B.y0 - 1, B.x1 + 2, B.y1 + 1);
 
 async function getArt(w) {
   if (!artCache.has(w)) artCache.set(w, await buildArt(w));
@@ -1190,16 +1233,16 @@ async function beginIn(name) {
   const a = await getArt(w);
   if (g !== gen) return;
   art = a.cells; B = a.B;
-  if (!art.length) { msg = "Add some words or a logo from the TermWall menu > Customize..."; chars = []; cur = null; render(); return; }
+  if (!art.length) { msg = "Add some words or a logo from the TermWall menu > Customize..."; chars = []; cur = null; fullRegion(); render(); return; }
   msg = null; chars = freshChars();
   const n = name && EFFECTS[name] ? name : pickOther(effectNames(), lastName);
-  lastName = n; cur = EFFECTS[n](chars); phase = "in"; wake();
+  lastName = n; measure(EFFECTS[n]); cur = EFFECTS[n](chars); phase = "in"; wake();
 }
 function holdSecs() { return Math.max(1, +C.holdSeconds || 8) / SPEED; }
 function beginHold() {
   phase = "hold"; cur = null; flash = 0;
   chars.forEach(c => { c.x = c.tx; c.y = c.ty; c.s = c.fin; cp(c.c, c.fc); c.vis = true; c.a = 1; });
-  render();
+  artRegion(); render();
   const h = holdSecs();
   if (h > 3) sleepFor(h * 500, beginShine); else sleepFor(h * 1000, beginOut);
 }
@@ -1214,7 +1257,7 @@ function beginShine() {
   wake();
 }
 function afterShine() { phase = "hold2"; cur = null; chars.forEach(c => cp(c.c, c.fc)); render(); sleepFor(Math.max(500, holdSecs() * 500 - 1600), beginOut); }
-function beginOut() { cur = EXITS[pick(exitNames())](chars); phase = "out"; wake(); }
+function beginOut() { const ex = EXITS[pick(exitNames())]; measure(ex); cur = ex(chars); phase = "out"; wake(); }
 function afterOut() { phase = "gap"; cur = null; chars = []; flash = 0; render(); sleepFor(600 / SPEED, () => beginIn()); }
 
 function sleepFor(ms, fn) {
@@ -1226,15 +1269,27 @@ function wake() {
   if (rafOn || paused) return;
   rafOn = true; last = performance.now();
   const id = ++loopId;
+  const cap = +C.fps || 0, hz = +window.TERMWALL_HZ || 60;
+  if (cap > 0 && cap < hz - 1) {
+    // Capped below the display rate: wake only when a frame is due. Waking on every display
+    // refresh (even to do nothing) makes macOS re-composite the screen that often.
+    const iv = 1000 / cap; let next = performance.now() + iv;
+    const tt = () => {
+      if (!rafOn || id !== loopId) return;
+      const now = performance.now(); next += iv; if (next < now) next = now + iv;
+      setTimeout(tt, next - now); loop(now, true);
+    };
+    setTimeout(tt, iv); return;
+  }
   const tick = now => { if (!rafOn || id !== loopId) return; requestAnimationFrame(tick); loop(now); };
   requestAnimationFrame(tick);
 }
 
-function loop(now) {
+function loop(now, timed) {
   if (paused) { rafOn = false; return; }
   ticks++;
   const cap = +C.fps || 0;                       // 0 = match the display's refresh rate
-  if (cap > 0 && now - last < 1000 / cap - 1.5) return;
+  if (!timed && cap > 0 && now - last < 1000 / cap - 1.5) return;
   const dt = Math.min(0.1, (now - last) / 1000) * SPEED;
   last = now;
   const done = cur ? cur.update(dt) : true;
@@ -1264,14 +1319,37 @@ window.termwall = {
     if (pendingWake) { const f = pendingWake; pendingWake = null; f(); }
     else if (phase === "in" || phase === "shine" || phase === "out") wake();
   },
-  stats() { return JSON.stringify({ renderer: Rn.name, fps: fpsVal, rafHz, fpsCap: +C.fps || 0, cols, rows, chars: chars.length, phase, effect: lastName, weight: lastWeight, paused, canvas: [cvW, cvH] }); },
-  capture() { render(); return cv.toDataURL("image/png"); },
+  stats() { return JSON.stringify({ renderer: Rn.name, fps: fpsVal, rafHz, fpsCap: +C.fps || 0, cols, rows, chars: chars.length, phase, effect: lastName, weight: lastWeight, paused, canvas: [cvW, cvH], region: [RX0, RY0, RX1, RY1] }); },
+  // Testing: does every effect stay inside the region measured for it, even with uneven frame times?
+  checkRegions() {
+    const out = {};
+    for (const [kind, set] of [["in", EFFECTS], ["out", EXITS]]) for (const n of Object.keys(set)) {
+      gen++; clearTimeout(sleepTimer); rafOn = false;
+      chars = freshChars(); measure(set[n]); const r = [RX0, RY0, RX1, RY1];
+      const e = set[n](chars); let miss = 0, worst = 0;
+      for (let i = 0, done = false; i < 1500 && !done; i++) {
+        done = e.update((0.5 + R()) / 60);
+        const ck = (x, y, s, c, a = 1) => {
+          if (a <= 0.004 || !s || s === " ") return;
+          const vx0 = Math.max(x, 0), vx1 = Math.min(x + 1, cols), vy0 = Math.max(y, 0), vy1 = Math.min(y + 1, rows);
+          if (vx1 <= vx0 || vy1 <= vy0) return;                        // off screen anyway
+          const d = Math.max(r[0] - vx0, vx1 - (r[2] + 1), r[1] - vy0, vy1 - (r[3] + 1));
+          if (d > 0.05) { miss++; worst = Math.max(worst, d); }
+        };
+        if (e.under) e.under(ck); for (const c of chars) if (c.vis) ck(c.x, c.y, c.s, c.c, c.a); if (e.over) e.over(ck);
+      }
+      const full = r[0] === 0 && r[1] === 0 && r[2] === cols - 1 && r[3] === rows - 1;
+      out[kind + ":" + n] = (full ? "full" : Math.round((r[2] - r[0] + 1) * (r[3] - r[1] + 1) / (cols * rows) * 100) + "%") + (miss ? ` OUTSIDE x${miss} by ${worst.toFixed(1)}` : "");
+    }
+    return out;
+  },
+  capture() { fullRegion(); render(); return cv.toDataURL("image/png"); },
   // Testing: step an effect deterministically and draw it at time `secs`.
   sim(name, secs) {
     gen++; clearTimeout(sleepTimer); rafOn = false;
     chars = freshChars(); cur = (EFFECTS[name] || EXITS[name])(chars); flash = 0;
     let tt = 0, done = false; while (tt < secs && !done) { done = cur.update(1 / 30); flash = Math.max(0, flash - 2.2 / 30); tt += 1 / 30; }
-    render(); return { name, t: +tt.toFixed(2), done };
+    fullRegion(); render(); return { name, t: +tt.toFixed(2), done };
   },
 };
 

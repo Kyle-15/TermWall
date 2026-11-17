@@ -18,7 +18,7 @@ Inspired by the look of the Omarchy screen saver.
 - **Font weights:** tick any of the nine weights (Ultralight to Black) and each animation uses a different one.
 - **Themes:** Tokyo Night, Catppuccin, Gruvbox, Nord, Everforest, Kanagawa, Rosé Pine, Matte Black, Matrix, Synthwave, or your own colors.
 - **Multiple screens:** every display gets its own copy, running at that display's refresh rate.
-- **Light on power:** drawn on the GPU in one call per frame, and nothing at all is drawn between animations. It can pause by itself when a game or window covers the desktop, on battery, or in Low Power Mode, and there are frame-rate, resolution and particle settings (with Max / Balanced / Battery saver presets).
+- **Light on power:** drawn on the GPU in one call per frame, only over the part of the screen an effect actually uses, and nothing at all is drawn between animations. Below your screen's refresh rate it wakes only when a frame is due, so macOS redraws the desktop less often. It can pause by itself when a game or window covers the desktop, on battery, or in Low Power Mode, and there are frame-rate, resolution and particle settings (with Max / Balanced / Battery saver presets).
 
 ## Install
 
