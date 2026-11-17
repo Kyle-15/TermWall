@@ -1338,7 +1338,6 @@ const EXITS = {
   // Easter egg (not in the settings list): a squad marches in, shoots the art to pieces and runs away.
   // Every so often it's the super-secret airstrike instead.
   soldiers(chs) {
-    if (callStrike || window.TERMWALL_STRIKE || R() < 0.12) { callStrike = false; return EXITS.airstrike(chs); }
     const side = pick(["left", "right", "both"]);
     const gy = Math.min(rows - 1, Math.round(B.y1) + 8);                 // the row their feet are on (room above for speech)
     const per = Math.round(clamp(B.h / 3.5, 6, 10)), troops = [];
@@ -1772,8 +1771,12 @@ function beginShine() {
 function afterShine() { phase = "hold2"; cur = null; chars.forEach(c => cp(c.c, c.fc)); render(); sleepFor(Math.max(500, holdSecs() * 500 - 1600), beginOut); flowWhileHolding(); }
 let sendTroops = false;
 function beginOut() {
-  const name = sendTroops || R() < 0.05 ? "soldiers" : pick(exitNames());    // the squad turns up about once in 20 exits
-  sendTroops = false;
+  // The squad turns up about once in 20 exits; about 1 in 8 of those is the airstrike instead. Decided here,
+  // once, because measure() below does a practice run of the exit and must see the same one.
+  let name = sendTroops || callStrike || R() < 0.05 ? "soldiers" : pick(exitNames());
+  // Asked for from the menu, they get exactly what they picked; the airstrike surprise is only for surprise visits.
+  if (name === "soldiers" && (callStrike || window.TERMWALL_STRIKE || (!sendTroops && R() < 0.12))) name = "airstrike";
+  sendTroops = false; callStrike = false;
   const ex = EXITS[name]; measure(ex); cur = ex(chars); phase = "out"; wake();
 }
 function afterOut() { phase = "gap"; cur = null; chars = []; flash = 0; render(); sleepFor(600 / SPEED, () => beginIn()); }

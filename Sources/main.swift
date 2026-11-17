@@ -710,13 +710,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusLine.isEnabled = false
         m.addItem(.separator())
         m.addItem(withTitle: "Customize…", action: #selector(openSettings), keyEquivalent: ",").target = self
-        m.addItem(withTitle: "Next Effect", action: #selector(nextEffect), keyEquivalent: "n").target = self
-        // Easter egg: hold Option while the menu is open and "Next Effect" becomes this.
-        let troops = m.addItem(withTitle: "Send In the Troops", action: #selector(sendTroops), keyEquivalent: "n")
-        troops.keyEquivalentModifierMask = [.command, .option]; troops.isAlternate = true; troops.target = self
-        // Super-secret: hold Option and Shift.
-        let strike = m.addItem(withTitle: "Call In the Airstrike", action: #selector(callAirstrike), keyEquivalent: "n")
-        strike.keyEquivalentModifierMask = [.command, .option, .shift]; strike.isAlternate = true; strike.target = self
+        // Easter eggs: hold Option while the menu is open and "Next Effect" becomes "Send In the Troops";
+        // hold Option+Shift for "Call In the Airstrike". These items have no letter shortcut on purpose:
+        // with one, macOS ignores Shift when picking which alternate to show.
+        let next = m.addItem(withTitle: "Next Effect", action: #selector(nextEffect), keyEquivalent: "")
+        next.keyEquivalentModifierMask = []; next.target = self
+        let troops = m.addItem(withTitle: "Send In the Troops", action: #selector(sendTroops), keyEquivalent: "")
+        troops.keyEquivalentModifierMask = [.option]; troops.isAlternate = true; troops.target = self
+        let strike = m.addItem(withTitle: "Call In the Airstrike", action: #selector(callAirstrike), keyEquivalent: "")
+        strike.keyEquivalentModifierMask = [.option, .shift]; strike.isAlternate = true; strike.target = self
         pauseItem = m.addItem(withTitle: "Pause", action: #selector(togglePause), keyEquivalent: "p")
         pauseItem.target = self
         m.addItem(.separator())
@@ -750,7 +752,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func nextEffect() { wall.next() }
-    @objc func sendTroops() { wall.eval("window.termwall && termwall.troops()") }
+    @objc func sendTroops() {
+        // Backup: if Shift is held too, they asked for the airstrike even if the menu showed the troops.
+        if NSEvent.modifierFlags.contains(.shift) || NSApp.currentEvent?.modifierFlags.contains(.shift) == true { return callAirstrike() }
+        wall.eval("window.termwall && termwall.troops()")
+    }
     @objc func callAirstrike() { wall.eval("window.termwall && termwall.airstrike()") }
     @objc func togglePause() {
         wall.userPaused.toggle(); wall.refreshPause()
