@@ -5,32 +5,44 @@
 <title>TermWall</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1b26; cursor: none; }
-  canvas { display: block; width: 100vw; height: 100vh; }
+  canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <script>
 "use strict";
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Config (the menu-bar app injects window.TERMWALL_CONFIG / TERMWALL_LOGO)
-// ---------------------------------------------------------------------------
-const ALL_EFFECTS = ["decrypt","rain","beams","matrix","slide","print","burn","expand","scatter","sweep","waves","spotlights"];
+// ===========================================================================
+const ALL_EFFECTS = ["decrypt", "rain", "beams", "matrix", "slide", "print", "burn", "expand", "scatter", "sweep", "waves", "spotlights",
+  "thunder", "funnel", "blackhole", "vortex", "bounce", "glitch", "unstable", "fireworks", "ripple", "laser", "overflow", "condense"];
+const ALL_EXITS = ["dissolve", "fall", "fade", "scatter", "funnel", "blackhole", "shatter"];
 const DEFAULTS = {
-  lines: ["TERMWALL"], font: "Helvetica Neue", fontWeight: "900",
+  lines: ["TERMWALL"], font: "system-ui", fontWeight: "900", fontWeights: null,
   logoColors: "theme", logoInvert: false, layout: "stack", style: "blocks", shadow: true,
   background: "#1a1b26", gradient: ["#7aa2f7", "#bb9af7", "#7dcfff"], accent: "#9ece6a",
   gradientDirection: "diagonal", size: 0.6, cellSize: 14,
-  effects: ALL_EFFECTS, holdSeconds: 8, speed: 1, fps: 30, asciiArt: ""
+  effects: ALL_EFFECTS, exits: ALL_EXITS, holdSeconds: 8, speed: 1,
+  fps: 0, renderScale: 1, detail: 1, asciiArt: ""
 };
 const C = Object.assign({}, DEFAULTS, window.TERMWALL_CONFIG || {});
+const QS = new URLSearchParams(location.search); // browser testing: ?effect=thunder&text=HI&weights=100,900&fps=60&scale=0.5&gl=0
+if (QS.has("text")) C.lines = QS.get("text").split("|");
+if (QS.has("weights")) C.fontWeights = QS.get("weights").split(",");
+if (QS.has("fps")) C.fps = +QS.get("fps");
+if (QS.has("scale")) C.renderScale = +QS.get("scale");
+const FORCE = window.TERMWALL_FORCE_EFFECT || QS.get("effect");
 const LOGO = window.TERMWALL_LOGO || null;
+const WEIGHTS = (Array.isArray(C.fontWeights) && C.fontWeights.length ? C.fontWeights : [C.fontWeight || "900"]).map(String);
+const SPEED = Math.min(5, Math.max(0.1, +C.speed || 1));
+const DETAIL = Math.min(1, Math.max(0.25, +C.detail || 1));
 document.documentElement.style.background = C.background;
 document.body.style.background = C.background;
 
-// ---------------------------------------------------------------------------
-// Small utils
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Utils
+// ===========================================================================
 const R = Math.random;
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -38,9 +50,20 @@ const ri = (a, b) => a + Math.floor(R() * (b - a + 1));
 const pick = a => a[Math.floor(R() * a.length)];
 const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeIn = t => t * t * t;
 const easeInOut = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const easeExpo = t => t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
+const easeBack = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const easeBounce = t => {
+  const n = 7.5625, d = 2.75;
+  if (t < 1 / d) return n * t * t;
+  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+  return n * (t -= 2.625 / d) * t + 0.984375;
+};
+const byKey = (chs, f) => { const m = new Map(); for (const c of chs) { const k = f(c); if (!m.has(k)) m.set(k, []); m.get(k).push(c); } return m; };
 
+// Colours are [r,g,b] arrays 0..255. mixc/cp write in place to avoid per-frame garbage.
 const hex = h => {
   h = String(h || "#000").trim().replace("#", "");
   if (h.length === 3) h = h.split("").map(x => x + x).join("");
@@ -48,21 +71,26 @@ const hex = h => {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
 const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const mixc = (o, a, b, t) => { o[0] = a[0] + (b[0] - a[0]) * t; o[1] = a[1] + (b[1] - a[1]) * t; o[2] = a[2] + (b[2] - a[2]) * t; return o; };
+const cp = (o, a) => { o[0] = a[0]; o[1] = a[1]; o[2] = a[2]; return o; };
 const css = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const T1 = [0, 0, 0], T2 = [0, 0, 0], T3 = [0, 0, 0];
 
 const BG = hex(C.background), ACC = hex(C.accent), WHITE = [255, 255, 255];
 const STOPS = (Array.isArray(C.gradient) && C.gradient.length ? C.gradient : ["#ffffff"]).map(hex);
-function grad(t) {
+function grad(t, o = [0, 0, 0]) {
   t = clamp(t);
-  if (STOPS.length === 1) return STOPS[0];
+  if (STOPS.length === 1) return cp(o, STOPS[0]);
   const s = t * (STOPS.length - 1), i = Math.min(STOPS.length - 2, Math.floor(s));
-  return mix(STOPS[i], STOPS[i + 1], s - i);
+  return mixc(o, STOPS[i], STOPS[i + 1], s - i);
 }
-const DIM = (c, k = 0.3) => mix(BG, c, k);
 const FIRE = ["#ffffff", "#fff75d", "#fe650d", "#8a003c", "#510100"].map(hex);
-function fire(t) { t = clamp(t); const s = t * (FIRE.length - 1), i = Math.min(FIRE.length - 2, Math.floor(s)); return mix(FIRE[i], FIRE[i + 1], s - i); }
+function fire(t, o) { t = clamp(t); const s = t * (FIRE.length - 1), i = Math.min(FIRE.length - 2, Math.floor(s)); return mixc(o, FIRE[i], FIRE[i + 1], s - i); }
 
 const GLY = "!@#$%^&*()-_=+[]{}<>?/\\|~;:0123456789ABCDEFabcdefxz".split("");
+// While a character travels it is ASCII getting denser; it becomes its block once it lands.
+const MORPH = ".:-=+*#%@".split("");
+function morph(c, k) { c.s = k >= 1 ? c.fin : MORPH[Math.min(MORPH.length - 1, Math.floor(Math.max(0, k) * MORPH.length))]; }
 
 // Quadrant block characters: bits TL=1 TR=2 BL=4 BR=8
 const QCHARS = [" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"];
@@ -71,62 +99,179 @@ const SHADE = { "░": .28, "▒": .52, "▓": .78 };
 const EIGHTHS = { "▁": 1, "▂": 2, "▃": 3, "▅": 5, "▆": 6, "▇": 7 };
 const RAMP = " .:-=+*#%@";
 
-// ---------------------------------------------------------------------------
-// Grid + drawing
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Grid (all in device pixels so cells are whole pixels and blocks tile seamlessly)
+// ===========================================================================
 const cv = document.getElementById("c");
-const ctx = cv.getContext("2d", { alpha: false });
-let W, H, dpr, cw, chh, cols, rows, ox, oy, FS;
+let cvW, cvH, cwp, chp, cols, rows, oxp, oyp, FSp, K;
 
 function setupGrid() {
-  dpr = window.devicePixelRatio || 1;
-  W = innerWidth; H = innerHeight;
-  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  FS = Math.max(6, +C.cellSize || 14);
-  cw = Math.max(3, Math.round(FS * 0.6));
-  chh = Math.max(5, Math.round(FS * 1.2));
-  cols = Math.floor(W / cw); rows = Math.floor(H / chh);
-  ox = Math.floor((W - cols * cw) / 2); oy = Math.floor((H - rows * chh) / 2);
-  ctx.font = `${FS}px ui-monospace, Menlo, monospace`;
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const ds = (window.devicePixelRatio || 1) * clamp(+C.renderScale || 1, 0.25, 1);
+  cvW = Math.max(1, Math.round(innerWidth * ds)); cvH = Math.max(1, Math.round(innerHeight * ds));
+  cv.width = cvW; cv.height = cvH;
+  const FS = Math.max(6, +C.cellSize || 14);
+  FSp = FS * ds;
+  cwp = Math.max(2, Math.round(FS * 0.6 * ds)); chp = Math.max(4, Math.round(FS * 1.2 * ds));
+  cols = Math.floor(cvW / cwp); rows = Math.floor(cvH / chp);
+  oxp = Math.floor((cvW - cols * cwp) / 2); oyp = Math.floor((cvH - rows * chp) / 2);
+  K = chp / cwp;
+  Atlas.dirty = true;
 }
 
-function glyph(s, gx, gy, c, a = 1) {
-  if (!s || s === " " || a <= 0.01) return;
-  const px = ox + gx * cw, py = oy + gy * chh;
-  const x0 = Math.round(px), x2 = Math.round(px + cw), y0 = Math.round(py), y2 = Math.round(py + chh);
-  ctx.fillStyle = css(c, a);
+// Paints one glyph in white into a 2D context at (px, py), cell-sized.
+function paintGlyph(x, s, px, py) {
   const bits = QBITS[s];
   if (bits) {
-    if (bits === 15) { ctx.fillRect(x0, y0, x2 - x0, y2 - y0); return; }
-    const x1 = Math.round(px + cw / 2), y1 = Math.round(py + chh / 2);
-    if (bits & 1) ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-    if (bits & 2) ctx.fillRect(x1, y0, x2 - x1, y1 - y0);
-    if (bits & 4) ctx.fillRect(x0, y1, x1 - x0, y2 - y1);
-    if (bits & 8) ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    const hx = Math.round(cwp / 2), hy = Math.round(chp / 2);
+    if (bits & 1) x.fillRect(px, py, hx, hy);
+    if (bits & 2) x.fillRect(px + hx, py, cwp - hx, hy);
+    if (bits & 4) x.fillRect(px, py + hy, hx, chp - hy);
+    if (bits & 8) x.fillRect(px + hx, py + hy, cwp - hx, chp - hy);
     return;
   }
-  if (SHADE[s]) { ctx.fillStyle = css(c, a * SHADE[s]); ctx.fillRect(x0, y0, x2 - x0, y2 - y0); return; }
-  if (EIGHTHS[s]) { const h = Math.round((y2 - y0) * EIGHTHS[s] / 8); ctx.fillRect(x0, y2 - h, x2 - x0, h); return; }
-  ctx.fillText(s, px + cw / 2, py + chh / 2 + 0.5);
+  if (SHADE[s]) { const g = x.globalAlpha; x.globalAlpha = g * SHADE[s]; x.fillRect(px, py, cwp, chp); x.globalAlpha = g; return; }
+  if (EIGHTHS[s]) { const h = Math.round(chp * EIGHTHS[s] / 8); x.fillRect(px, py + chp - h, cwp, h); return; }
+  x.save(); x.beginPath(); x.rect(px, py, cwp, chp); x.clip();
+  x.fillText(s, px + cwp / 2, py + chp / 2 + 0.5);
+  x.restore();
 }
 
-function render(chars, parts, under) {
-  ctx.fillStyle = css(BG); ctx.fillRect(0, 0, W, H);
-  const drawParts = () => { if (parts) for (const p of parts) glyph(p.s, p.x, p.y, p.c, p.a == null ? 1 : p.a); };
-  if (under) drawParts();
-  for (const ch of chars) if (ch.vis) glyph(ch.s, ch.x, ch.y, ch.c, ch.a);
-  if (!under) drawParts();
+// Glyph atlas for the GPU renderer: every glyph drawn once, white, one per cell.
+const Atlas = {
+  map: new Map(), list: [], cols: 64, dirty: true, canvas: null,
+  idx(s) { let i = this.map.get(s); if (i === undefined) { i = this.list.length; this.list.push(s); this.map.set(s, i); this.dirty = true; } return i; },
+  build() {
+    const n = Math.max(1, this.list.length), r = Math.ceil(n / this.cols);
+    const c = this.canvas || (this.canvas = document.createElement("canvas"));
+    c.width = this.cols * cwp; c.height = r * chp;
+    const x = c.getContext("2d");
+    x.clearRect(0, 0, c.width, c.height);
+    x.fillStyle = "#fff"; x.font = `${FSp}px ui-monospace, Menlo, monospace`; x.textAlign = "center"; x.textBaseline = "middle";
+    this.list.forEach((s, i) => paintGlyph(x, s, (i % this.cols) * cwp, Math.floor(i / this.cols) * chp));
+    this.dirty = false;
+    return c;
+  },
+};
+[...GLY, ...MORPH, ...QCHARS.slice(1), ...Object.keys(SHADE), ...Object.keys(EIGHTHS), "▄", "█",
+  "│", "¦", "|", ":", "'", ".", "·", "°", "˙", "*", "+", "x", "o", "O", "@", "/", "\\"].forEach(s => Atlas.idx(s));
+
+// ===========================================================================
+// Renderers: WebGL2 (one instanced draw call per frame) with a Canvas2D fallback
+// ===========================================================================
+function makeGL() {
+  let gl = null;
+  try { gl = cv.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, powerPreference: "low-power" }); } catch (e) { }
+  if (!gl) return null;
+  const VS = `#version 300 es
+layout(location=0) in vec2 aCorner;
+layout(location=1) in vec2 aPos;
+layout(location=2) in float aGlyph;
+layout(location=3) in vec4 aCol;
+uniform vec2 uRes, uCell, uOrigin, uAtlas; uniform float uACols;
+out vec2 vUV; out vec4 vCol;
+void main() {
+  vec2 p = floor(aPos * uCell + 0.5) + uOrigin + aCorner * uCell;
+  vec2 c = p / uRes * 2.0 - 1.0;
+  gl_Position = vec4(c.x, -c.y, 0.0, 1.0);
+  float gy = floor((aGlyph + 0.5) / uACols), gx = aGlyph - gy * uACols;
+  vUV = (vec2(gx, gy) * uCell + aCorner * uCell) / uAtlas;
+  vCol = vec4(aCol.rgb / 255.0, aCol.a);
+}`;
+  const FSH = `#version 300 es
+precision highp float;
+in vec2 vUV; in vec4 vCol; uniform sampler2D uTex; out vec4 o;
+void main() { float a = texture(uTex, vUV).a * vCol.a; o = vec4(vCol.rgb * a, a); }`;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FSH));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  } catch (e) { console.error(e); return null; }
+  const U = n => gl.getUniformLocation(prog, n);
+  const uRes = U("uRes"), uCell = U("uCell"), uOrigin = U("uOrigin"), uAtlas = U("uAtlas"), uACols = U("uACols"), uTex = U("uTex");
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const ib = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ib);
+  const ST = 28;
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, ST, 0); gl.vertexAttribDivisor(1, 1);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, ST, 8); gl.vertexAttribDivisor(2, 1);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, ST, 12); gl.vertexAttribDivisor(3, 1);
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  let cap = 8192, data = new Float32Array(cap * 7), n = 0, gpuCap = 0, bg = BG, aw = 1, ah = 1;
+  return {
+    name: "webgl2",
+    begin(b) { n = 0; bg = b; },
+    emit(x, y, s, c, a) {
+      if (n >= cap) { cap *= 2; const d = new Float32Array(cap * 7); d.set(data); data = d; }
+      const i = n * 7;
+      data[i] = x; data[i + 1] = y; data[i + 2] = Atlas.idx(s);
+      data[i + 3] = c[0]; data[i + 4] = c[1]; data[i + 5] = c[2]; data[i + 6] = a;
+      n++;
+    },
+    end() {
+      if (gl.isContextLost()) return;
+      if (Atlas.dirty) {
+        const ac = Atlas.build(); aw = ac.width; ah = ac.height;
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ac);
+      }
+      gl.viewport(0, 0, cvW, cvH);
+      gl.clearColor(bg[0] / 255, bg[1] / 255, bg[2] / 255, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      if (!n) return;
+      gl.useProgram(prog); gl.bindVertexArray(vao);
+      gl.uniform2f(uRes, cvW, cvH); gl.uniform2f(uCell, cwp, chp); gl.uniform2f(uOrigin, oxp, oyp);
+      gl.uniform2f(uAtlas, aw, ah); gl.uniform1f(uACols, Atlas.cols);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(uTex, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, ib);
+      if (gpuCap < n * 7) { gpuCap = cap * 7; gl.bufferData(gl.ARRAY_BUFFER, gpuCap * 4, gl.DYNAMIC_DRAW); }
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, n * 7);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n);
+    },
+  };
 }
 
-// ---------------------------------------------------------------------------
+function make2D() {
+  const x = cv.getContext("2d", { alpha: false });
+  return {
+    name: "canvas2d",
+    begin(b) {
+      x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1;
+      x.fillStyle = css(b); x.fillRect(0, 0, cvW, cvH);
+      x.font = `${FSp}px ui-monospace, Menlo, monospace`; x.textAlign = "center"; x.textBaseline = "middle";
+    },
+    emit(gx, gy, s, c, a) {
+      x.fillStyle = css(c); x.globalAlpha = Math.min(1, a);
+      const px = oxp + Math.round(gx * cwp), py = oyp + Math.round(gy * chp);
+      if (QBITS[s] === 15) x.fillRect(px, py, cwp, chp); else paintGlyph(x, s, px, py);
+    },
+    end() { x.globalAlpha = 1; },
+  };
+}
+
+let Rn = QS.get("gl") === "0" ? null : makeGL();
+if (!Rn) Rn = make2D();
+cv.addEventListener("webglcontextlost", e => e.preventDefault());
+cv.addEventListener("webglcontextrestored", () => { Rn = makeGL() || Rn; Atlas.dirty = true; render(); });
+
+const emit = (x, y, s, c, a = 1) => {
+  if (a > 0.004 && s && s !== " " && x > -2 && y > -2 && x < cols + 1 && y < rows + 1) Rn.emit(x, y, s, c, a);
+};
+
+// ===========================================================================
 // Turning text / logos into character art
-// ---------------------------------------------------------------------------
+// ===========================================================================
 function canvas(w, h) { const c = document.createElement("canvas"); c.width = Math.max(1, w); c.height = Math.max(1, h); return c; }
 function loadImage(src) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; }); }
 
-// Crop a canvas (alpha = ink) to the bounding box of its ink.
 function cropInk(c) {
   const w = c.width, h = c.height, p = c.getContext("2d").getImageData(0, 0, w, h).data;
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
@@ -149,7 +294,6 @@ function inkFromImage(im, invert) {
   let transparent = false;
   for (let i = 3; i < p.length; i += 28) if (p[i] < 250) { transparent = true; break; }
   if (!transparent) {
-    // Opaque image: key out the background using the corner colours.
     const cs = [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]].map(([cx, cy]) => { const i = (cy * w + cx) * 4; return [p[i], p[i + 1], p[i + 2]]; });
     const bg = [0, 1, 2].map(k => cs.reduce((s, c) => s + c[k], 0) / 4);
     for (let i = 0; i < p.length; i += 4) {
@@ -168,20 +312,25 @@ function fontFamily(f) {
   return `"${f}", system-ui`;
 }
 
-function inkFromText(lines) {
+function inkFromText(lines, weight) {
   if (!lines.length) return null;
-  const fs = 220, lh = fs * 1.08;
-  const font = `${C.fontWeight || "900"} ${fs}px ${fontFamily(C.font)}`;
+  const fs = 220, lh = fs * 1.08, wn = +weight || 400;
+  const font = `${weight} ${fs}px ${fontFamily(C.font)}`;
   const m = canvas(10, 10).getContext("2d"); m.font = font;
   const wmax = Math.max(...lines.map(l => m.measureText(l).width));
   const c = canvas(Math.ceil(wmax + fs), Math.ceil(lines.length * lh + fs)), x = c.getContext("2d");
-  x.font = font; x.fillStyle = "#fff"; x.textAlign = "center"; x.textBaseline = "middle";
-  lines.forEach((l, i) => x.fillText(l, c.width / 2, fs / 2 + lh * (i + 0.5)));
+  x.font = font; x.fillStyle = x.strokeStyle = "#fff"; x.textAlign = "center"; x.textBaseline = "middle"; x.lineJoin = "round";
+  // Heavy weights get a little extra stroke so Heavy/Black stand clearly apart from Bold.
+  const extra = wn >= 800 ? fs * 0.03 * (wn - 700) / 100 : 0;
+  x.lineWidth = extra;
+  lines.forEach((l, i) => { const y = fs / 2 + lh * (i + 0.5); x.fillText(l, c.width / 2, y); if (extra) x.strokeText(l, c.width / 2, y); });
   return cropInk(c);
 }
 
-// Sample an ink canvas into a wc x hc block of cells starting at (gx, gy).
-function sample(src, gx, gy, wc, hc, colorOf, useOrig, out, shadowOut) {
+// Thin weights need a lower coverage threshold or their strokes vanish between samples.
+const weightThreshold = w => { w = +w || 400; return w <= 200 ? 0.2 : w <= 300 ? 0.28 : w <= 400 ? 0.36 : 0.45; };
+
+function sample(src, gx, gy, wc, hc, colorOf, useOrig, thr, out, shadowOut) {
   const blocks = C.style !== "ascii";
   const sx = blocks ? 2 : 1, sy = blocks ? 2 : 1, SS = 4;
   const nx = wc * sx, ny = hc * sy;
@@ -200,7 +349,7 @@ function sample(src, gx, gy, wc, hc, colorOf, useOrig, out, shadowOut) {
     cov[n] = a / (SS * SS);
     if (a > 0) { col[n * 3] = r / a; col[n * 3 + 1] = g / a; col[n * 3 + 2] = b / a; }
   }
-  const on = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && cov[j * nx + i] > 0.45;
+  const on = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && cov[j * nx + i] > thr;
   for (let cy = 0; cy < hc; cy++) for (let cx = 0; cx < wc; cx++) {
     let ch, n;
     if (blocks) {
@@ -211,16 +360,14 @@ function sample(src, gx, gy, wc, hc, colorOf, useOrig, out, shadowOut) {
       n = [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]].map(([a, b]) => b * nx + a).reduce((best, k) => cov[k] > cov[best] ? k : best);
     } else {
       n = cy * nx + cx;
-      if (cov[n] < 0.08) continue;
+      if (cov[n] < thr * 0.2) continue;
       ch = RAMP[Math.min(RAMP.length - 1, 1 + Math.floor(cov[n] * (RAMP.length - 1)))];
     }
     const X = gx + cx, Y = gy + cy;
-    const color = useOrig ? [col[n * 3], col[n * 3 + 1], col[n * 3 + 2]] : colorOf(X, Y);
-    out.push({ x: X, y: Y, ch, color });
+    out.push({ x: X, y: Y, ch, color: useOrig ? [col[n * 3], col[n * 3 + 1], col[n * 3 + 2]] : colorOf(X, Y) });
   }
-  // Drop shadow: the shape shifted one cell right and down, drawn dim behind it.
   if (blocks && shadowOut) {
-    const dy = Math.max(1, Math.round(ny * 0.035)), dx = Math.max(1, Math.round(dy * chh / cw));
+    const dy = Math.max(1, Math.round(ny * 0.035)), dx = Math.max(1, Math.round(dy * K));
     const ex = Math.ceil(dx / 2), ey = Math.ceil(dy / 2);
     for (let cy = 0; cy < hc + ey; cy++) for (let cx = 0; cx < wc + ex; cx++) {
       const i = cx * 2, j = cy * 2;
@@ -228,30 +375,34 @@ function sample(src, gx, gy, wc, hc, colorOf, useOrig, out, shadowOut) {
       const bits = (s(i, j) ? 1 : 0) | (s(i + 1, j) ? 2 : 0) | (s(i, j + 1) ? 4 : 0) | (s(i + 1, j + 1) ? 8 : 0);
       if (!bits) continue;
       const X = gx + cx, Y = gy + cy;
-      shadowOut.push({ x: X, y: Y, ch: QCHARS[bits], color: DIM(colorOf(X, Y), 0.28), shadow: true });
+      shadowOut.push({ x: X, y: Y, ch: QCHARS[bits], color: mixc(colorOf(X, Y), BG, colorOf(X, Y), 0.28) });
     }
   }
 }
 
-let B; // bounds of the art in cells
 function makeColorFn(x0, y0, x1, y1) {
   const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-  const k = chh / cw, rmax = Math.hypot(w / 2, h / 2 * k) || 1;
+  const rmax = Math.hypot(w / 2, h / 2 * K) || 1;
   return (x, y) => {
     const u = (x - x0) / w, v = (y - y0) / h;
     switch (C.gradientDirection) {
       case "horizontal": return grad(u);
       case "vertical": return grad(v);
-      case "radial": return grad(Math.hypot(x - cx, (y - cy) * k) / rmax);
+      case "radial": return grad(Math.hypot(x - cx, (y - cy) * K) / rmax);
       default: return grad(u * 0.6 + v * 0.4);
     }
   };
 }
 
-async function buildArt() {
+let logoInk;
+async function getLogoInk() {
+  if (logoInk === undefined) { logoInk = null; if (LOGO) { try { logoInk = inkFromImage(await loadImage(LOGO), !!C.logoInvert); } catch (e) { logoInk = null; } } }
+  return logoInk;
+}
+
+async function buildArt(weight) {
   const size = clamp(+C.size || 0.6, 0.1, 0.98);
   const maxW = Math.max(8, Math.floor(cols * size)), maxH = Math.max(4, Math.floor(rows * size));
-  const k = chh / cw;
   const cells = [], shadows = [];
 
   if (C.asciiArt && C.asciiArt.trim()) {
@@ -264,22 +415,21 @@ async function buildArt() {
     return finishArt(cells);
   }
 
-  let logo = null;
-  if (LOGO) { try { logo = inkFromImage(await loadImage(LOGO), !!C.logoInvert); } catch (e) { logo = null; } }
+  const logo = await getLogoInk();
   const lines = (C.lines || []).map(s => String(s).replace(/\s+$/, ""));
   while (lines.length && !lines[lines.length - 1]) lines.pop();
   while (lines.length && !lines[0]) lines.shift();
-  const text = lines.length ? inkFromText(lines) : null;
+  const text = lines.length ? inkFromText(lines, weight) : null;
   if (!logo && !text) return finishArt([]);
 
   const asp = ink => ink.width / ink.height;
-  const dims = (ink, hc) => [Math.max(1, Math.round(asp(ink) * hc * k)), Math.max(1, Math.round(hc))];
+  const dims = (ink, hc) => [Math.max(1, Math.round(asp(ink) * hc * K)), Math.max(1, Math.round(hc))];
   const parts = [];
   if (logo && text) {
     const aL = asp(logo), aT = asp(text);
     if (C.layout === "side") {
       const gap = Math.max(3, Math.round(cols * 0.025));
-      const H0 = Math.min(maxH, (maxW - gap) / (k * (aL + aT * 0.42)));
+      const H0 = Math.min(maxH, (maxW - gap) / (K * (aL + aT * 0.42)));
       const [lw, lh] = dims(logo, H0), [tw, th] = dims(text, Math.max(2, H0 * 0.42));
       const x0 = Math.floor((cols - (lw + gap + tw)) / 2);
       parts.push({ ink: logo, x: x0, y: Math.floor((rows - lh) / 2), w: lw, h: lh, logo: true });
@@ -287,7 +437,7 @@ async function buildArt() {
     } else {
       const gap = Math.max(2, Math.round(rows * 0.05));
       let lhc = (maxH - gap) / 1.4, thc = lhc * 0.4;
-      lhc = Math.min(lhc, maxW / (k * aL)); thc = Math.min(thc, maxW / (k * aT));
+      lhc = Math.min(lhc, maxW / (K * aL)); thc = Math.min(thc, maxW / (K * aT));
       const [lw, lh] = dims(logo, lhc), [tw, th] = dims(text, Math.max(2, thc));
       const y0 = Math.floor((rows - (lh + gap + th)) / 2);
       parts.push({ ink: logo, x: Math.floor((cols - lw) / 2), y: y0, w: lw, h: lh, logo: true });
@@ -295,30 +445,30 @@ async function buildArt() {
     }
   } else {
     const ink = logo || text;
-    const hc = Math.min(maxH, maxW / (k * asp(ink)));
+    const hc = Math.min(maxH, maxW / (K * asp(ink)));
     const [w, h] = dims(ink, hc);
     parts.push({ ink, x: Math.floor((cols - w) / 2), y: Math.floor((rows - h) / 2), w, h, logo: !!logo });
   }
   const x0 = Math.min(...parts.map(p => p.x)), y0 = Math.min(...parts.map(p => p.y));
   const x1 = Math.max(...parts.map(p => p.x + p.w)), y1 = Math.max(...parts.map(p => p.y + p.h));
   const colorOf = makeColorFn(x0, y0, x1, y1);
-  for (const p of parts) sample(p.ink, p.x, p.y, p.w, p.h, colorOf, p.logo && C.logoColors === "original", cells, C.shadow ? shadows : null);
+  for (const p of parts) sample(p.ink, p.x, p.y, p.w, p.h, colorOf, p.logo && C.logoColors === "original",
+    p.logo ? 0.45 : weightThreshold(weight), cells, C.shadow ? shadows : null);
   return finishArt(shadows.concat(cells));
 }
 
 function finishArt(cells) {
-  if (!cells.length) { B = { x0: 0, y0: 0, x1: 1, y1: 1, w: 1, h: 1, cx: cols / 2, cy: rows / 2 }; return cells; }
-  const xs = cells.map(c => c.x), ys = cells.map(c => c.y);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  B = { x0, y0, x1, y1, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
-  return cells;
+  if (!cells.length) return { cells, B: { x0: 0, y0: 0, x1: 1, y1: 1, w: 1, h: 1, cx: cols / 2, cy: rows / 2 } };
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const c of cells) { if (c.x < x0) x0 = c.x; if (c.x > x1) x1 = c.x; if (c.y < y0) y0 = c.y; if (c.y > y1) y1 = c.y; }
+  return { cells, B: { x0, y0, x1, y1, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 } };
 }
 
-// ---------------------------------------------------------------------------
-// Effects. Each returns { update(dt) -> done, parts }.
-// A char: tx,ty target; x,y current; s symbol; fin final symbol; fc final colour; c colour; a alpha; vis.
-// ---------------------------------------------------------------------------
-const byKey = (chs, f) => { const m = new Map(); for (const c of chs) { const k = f(c); if (!m.has(k)) m.set(k, []); m.get(k).push(c); } return m; };
+// ===========================================================================
+// Effects. Each returns { update(dt) -> done, under?(emit), over?(emit) }.
+// A char: tx,ty target; x,y position; s symbol; fin final symbol; fc final colour; c colour (owned array); a alpha; vis.
+// ===========================================================================
+let B, flash = 0;
 
 const EFFECTS = {
   decrypt(chs) {
@@ -332,17 +482,15 @@ const EFFECTS = {
         c.vis = true;
         if (t < c.lock) {
           done = false; c.nt -= dt;
-          if (c.nt <= 0) { c.nt = 0.04 + R() * 0.09; c.s = pick(GLY); c.c = t < typeDur + 0.3 ? DIM(grad(R()), 0.4) : mix(BG, grad(R()), 0.55 + R() * 0.4); }
-        } else {
-          const k = clamp((t - c.lock) / 0.35); c.s = c.fin; c.c = mix(WHITE, c.fc, k); if (k < 1) done = false;
-        }
+          if (c.nt <= 0) { c.nt = 0.04 + R() * 0.09; c.s = pick(GLY); mixc(c.c, BG, grad(R(), T1), t < typeDur + 0.3 ? 0.4 : 0.55 + R() * 0.4); }
+        } else { const k = clamp((t - c.lock) / 0.35); c.s = c.fin; mixc(c.c, WHITE, c.fc, k); if (k < 1) done = false; }
       }
       return done;
     } };
   },
 
   rain(chs) {
-    const RC = [mix(ACC, WHITE, .35), ACC, mix(ACC, BG, .3), mix(grad(0), WHITE, .2)];
+    const RC = [mix(ACC, WHITE, .35), ACC, mix(ACC, BG, .3), mix(grad(0), WHITE, .2)], SY = ["│", "¦", "|", ":"];
     chs.forEach(c => { c.vis = false; c.d = R() * 1.6; c.y = -1 - R() * rows * 0.3; c.v = rows * (0.5 + R() * 0.3); c.land = -1; c.rc = pick(RC); });
     let t = 0;
     return { update(dt) {
@@ -351,11 +499,9 @@ const EFFECTS = {
         if (t < c.d) { done = false; continue; }
         c.vis = true;
         if (c.land < 0) {
-          done = false; c.v += rows * 1.5 * dt; c.y += c.v * dt; c.s = pick(["│", "¦", "|", ":"]); c.c = c.rc;
+          done = false; c.v += rows * 1.5 * dt; c.y += c.v * dt; c.s = SY[(c.y * 3 | 0) & 3]; cp(c.c, c.rc);
           if (c.y >= c.ty) { c.y = c.ty; c.land = t; c.s = c.fin; }
-        } else {
-          const k = clamp((t - c.land) / 0.5); c.c = mix(c.rc, c.fc, k); if (k < 1) done = false;
-        }
+        } else { const k = clamp((t - c.land) / 0.5); mixc(c.c, c.rc, c.fc, k); if (k < 1) done = false; }
       }
       return done;
     } };
@@ -363,72 +509,78 @@ const EFFECTS = {
 
   beams(chs) {
     chs.forEach(c => { c.vis = false; c.lit = -1; });
-    const rowsM = byKey(chs, c => c.ty), BEAM = mix(ACC, WHITE, 0.4);
-    const beams = shuffle([...rowsM.keys()]).map((y, i) => ({ y, d: i * 0.05 + R() * 0.15, dir: R() < .5 ? 1 : -1 }));
-    const span = B.w + 30, speed = span / 0.75;
-    const p1 = Math.max(0, ...beams.map(b => b.d)) + 0.85;
+    const rowsM = byKey(chs, c => c.ty), BEAM = mix(ACC, WHITE, .4);
+    const beams = shuffle([...rowsM.keys()]).map((y, i) => ({ y, d: i * 0.05 + R() * 0.15, dir: R() < .5 ? 1 : -1, head: 0, on: false }));
+    const span = B.w + 30, speed = span / 0.75, p1 = Math.max(0, ...beams.map(b => b.d)) + 0.85;
     const dist = c => (c.tx - B.x0) + (c.ty - B.y0) * 2, maxD = B.w + B.h * 2, sweep = (maxD + 10) / 1.1;
-    const parts = []; let t = 0;
-    return { parts, update(dt) {
-      t += dt; parts.length = 0;
-      for (const b of beams) {
-        const lt = t - b.d; if (lt < 0) continue;
-        const head = b.dir > 0 ? B.x0 - 15 + lt * speed : B.x1 + 15 - lt * speed;
-        if (lt * speed < span + 10) for (let i = 0; i < 10; i++) parts.push({ x: Math.round(head - b.dir * i), y: b.y, s: i < 2 ? "█" : i < 4 ? "▓" : i < 7 ? "▒" : "░", c: BEAM, a: 1 - i / 11 });
-        for (const c of rowsM.get(b.y)) if (c.lit < 0 && (b.dir > 0 ? c.tx <= head : c.tx >= head)) { c.lit = t; c.vis = true; c.s = c.fin; }
-      }
-      const front = (t - p1) * sweep;
-      for (const c of chs) {
-        if (c.lit < 0) continue;
-        const dim = DIM(c.fc, 0.4);
-        c.c = mix(BEAM, dim, clamp((t - c.lit) / 0.4));
-        if (front > 0 && dist(c) < front) {
-          const kk = clamp((front - dist(c)) / 10);
-          c.c = kk < 0.3 ? mix(dim, WHITE, kk / 0.3) : mix(WHITE, c.fc, (kk - 0.3) / 0.7);
+    const TR = ["█", "█", "▓", "▓", "▒", "▒", "▒", "░", "░", "░"];
+    let t = 0;
+    return {
+      over(e) { for (const b of beams) if (b.on) for (let i = 0; i < 10; i++) e(Math.round(b.head - b.dir * i), b.y, TR[i], BEAM, 1 - i / 11); },
+      update(dt) {
+        t += dt;
+        for (const b of beams) {
+          const lt = t - b.d; b.on = false; if (lt < 0) continue;
+          b.head = b.dir > 0 ? B.x0 - 15 + lt * speed : B.x1 + 15 - lt * speed; b.on = lt * speed < span + 10;
+          for (const c of rowsM.get(b.y)) if (c.lit < 0 && (b.dir > 0 ? c.tx <= b.head : c.tx >= b.head)) { c.lit = t; c.vis = true; c.s = c.fin; }
         }
-      }
-      return front > maxD + 12;
-    } };
+        const front = (t - p1) * sweep;
+        for (const c of chs) {
+          if (c.lit < 0) continue;
+          mixc(T1, BG, c.fc, 0.4);
+          const d = dist(c);
+          if (front > 0 && d < front) { const kk = clamp((front - d) / 10); if (kk < 0.3) mixc(c.c, T1, WHITE, kk / 0.3); else mixc(c.c, WHITE, c.fc, (kk - 0.3) / 0.7); }
+          else mixc(c.c, BEAM, T1, clamp((t - c.lit) / 0.4));
+        }
+        return front > maxD + 12;
+      },
+    };
   },
 
   matrix(chs) {
     chs.forEach(c => { c.vis = false; c.rev = -1; });
-    const byCol = byKey(chs, c => c.tx), HEAD = mix(ACC, WHITE, 0.65), REV = 1.4;
-    const drops = [], parts = []; let t = 0, allAt = -1;
-    const spawn = col => drops.push({ x: col, y: -R() * rows * 0.4, v: rows * (0.45 + R() * 0.6), len: ri(6, 22), g: Array.from({ length: 24 }, () => pick(GLY)) });
-    return { parts, under: true, update(dt) {
-      t += dt;
-      const unrevealed = [...byCol.keys()].filter(x => byCol.get(x).some(c => c.rev < 0));
-      if (allAt < 0) {
-        let n = cols * dt * 0.9; while (n > 0) { if (R() < n) spawn(t > REV && unrevealed.length && R() < 0.7 ? pick(unrevealed) : ri(0, cols - 1)); n -= 1; }
-      }
-      for (const d of drops) {
-        d.y += d.v * dt; if (R() < 0.3) d.g[ri(0, 23)] = pick(GLY);
-        if (t > REV && byCol.has(d.x)) for (const c of byCol.get(d.x)) if (c.rev < 0 && c.ty <= d.y) { c.rev = t; c.vis = true; c.s = c.fin; }
-      }
-      for (let i = drops.length - 1; i >= 0; i--) if (drops[i].y - drops[i].len > rows) drops.splice(i, 1);
-      if (allAt < 0 && t > REV && !unrevealed.length) allAt = t;
-      parts.length = 0;
-      for (const d of drops) {
-        const hy = Math.floor(d.y);
-        for (let i = 0; i < d.len; i++) {
-          const y = hy - i; if (y < 0 || y >= rows) continue;
-          parts.push({ x: d.x, y, s: d.g[(y % 24 + 24) % 24], c: i === 0 ? HEAD : mix(BG, ACC, (1 - i / d.len) * 0.85) });
+    const byCol = byKey(chs, c => c.tx), HEAD = mix(ACC, WHITE, .65), REV = 1.4;
+    const left = new Set(byCol.keys()), drops = [], maxDrops = Math.round(cols * 1.3 * DETAIL);
+    let t = 0, allAt = -1;
+    const spawn = col => { if (drops.length < maxDrops) drops.push({ x: col, y: -R() * rows * 0.4, v: rows * (0.45 + R() * 0.6), len: ri(6, 22), g: Array.from({ length: 24 }, () => pick(GLY)) }); };
+    return {
+      under(e) {
+        for (const d of drops) {
+          const hy = Math.floor(d.y);
+          for (let i = 0; i < d.len; i++) { const y = hy - i; if (y < 0 || y >= rows) continue; e(d.x, y, d.g[y % 24], i ? ACC : HEAD, i ? (1 - i / d.len) * 0.85 : 1); }
         }
-      }
-      const kk = allAt < 0 ? 0 : clamp((t - allAt) / 1.2);
-      for (const c of chs) if (c.rev >= 0) c.c = mix(mix(HEAD, ACC, clamp((t - c.rev) / 0.5)), c.fc, kk);
-      return allAt >= 0 && kk >= 1 && !drops.length;
-    } };
+      },
+      update(dt) {
+        t += dt;
+        if (allAt < 0) {
+          const ul = t > REV && left.size ? [...left] : null;
+          let n = cols * dt * 0.9 * DETAIL;
+          while (n > 0) { if (R() < n) spawn(ul && R() < 0.7 ? pick(ul) : ri(0, cols - 1)); n -= 1; }
+        }
+        for (const d of drops) {
+          d.y += d.v * dt; if (R() < 0.3) d.g[ri(0, 23)] = pick(GLY);
+          if (t > REV && left.has(d.x)) {
+            let any = false;
+            for (const c of byCol.get(d.x)) if (c.rev < 0) { if (c.ty <= d.y) { c.rev = t; c.vis = true; c.s = c.fin; } else any = true; }
+            if (!any) left.delete(d.x);
+          }
+        }
+        for (let i = drops.length - 1; i >= 0; i--) if (drops[i].y - drops[i].len > rows) { drops[i] = drops[drops.length - 1]; drops.pop(); }
+        if (allAt < 0 && t > REV && !left.size) allAt = t;
+        const kk = allAt < 0 ? 0 : clamp((t - allAt) / 1.2);
+        for (const c of chs) if (c.rev >= 0) { mixc(T1, HEAD, ACC, clamp((t - c.rev) / 0.5)); mixc(c.c, T1, c.fc, kk); }
+        return allAt >= 0 && kk >= 1 && !drops.length;
+      },
+    };
   },
 
   slide(chs) {
-    const ys = [...new Set(chs.map(c => c.ty))].sort((a, b) => a - b);
-    chs.forEach(c => { const i = ys.indexOf(c.ty); c.vis = true; c.s = c.fin; c.dir = i % 2 ? 1 : -1; c.d = i * 0.035; c.sx = c.tx + c.dir * (cols + 4); });
+    const ys = [...new Set(chs.map(c => c.ty))].sort((a, b) => a - b), yi = new Map(ys.map((y, i) => [y, i]));
+    chs.forEach(c => { const i = yi.get(c.ty); c.vis = true; c.dir = i % 2 ? 1 : -1; c.d = i * 0.035; c.sx = c.tx + c.dir * (cols + 4); });
     let t = 0;
     return { update(dt) {
       t += dt; let done = true;
-      for (const c of chs) { const k = clamp((t - c.d) / 1.1); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, easeOut(k)); c.c = mix(ACC, c.fc, k); }
+      for (const c of chs) { const k = clamp((t - c.d) / 1.1); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, easeOut(k)); morph(c, k); mixc(c.c, ACC, c.fc, k); }
       return done;
     } };
   },
@@ -438,44 +590,50 @@ const EFFECTS = {
     const cps = Math.max(60, (B.w + 1) * ys.length / 2.4);
     let start = 0; const lines = [];
     for (const y of ys) {
-      const r = rowsM.get(y), x0 = Math.min(...r.map(c => c.tx)), x1 = Math.max(...r.map(c => c.tx));
+      const r = rowsM.get(y); let x0 = Infinity, x1 = -Infinity; for (const c of r) { x0 = Math.min(x0, c.tx); x1 = Math.max(x1, c.tx); }
       r.forEach(c => { c.vis = false; c.s = c.fin; c.pt = start + (c.tx - x0) / cps; });
       lines.push({ y, x0, x1, start, end: start + (x1 - x0 + 1) / cps }); start += (x1 - x0 + 1) / cps + 0.03;
     }
-    const parts = []; let t = 0;
-    return { parts, update(dt) {
-      t += dt; parts.length = 0;
-      const ln = lines.find(l => t >= l.start && t < l.end + 0.03);
-      if (ln) parts.push({ x: Math.min(ln.x1 + 1, Math.floor(ln.x0 + (t - ln.start) * cps)), y: ln.y, s: "█", c: ACC });
-      for (const c of chs) if (t >= c.pt) { c.vis = true; c.c = mix(WHITE, c.fc, clamp((t - c.pt) / 0.3)); }
-      return t > start + 0.35;
-    } };
+    let t = 0, curX = -1, curY = -1;
+    return {
+      over(e) { if (curX >= 0) e(curX, curY, "█", ACC, 1); },
+      update(dt) {
+        t += dt; curX = -1;
+        const ln = lines.find(l => t >= l.start && t < l.end + 0.03);
+        if (ln) { curX = Math.min(ln.x1 + 1, Math.floor(ln.x0 + (t - ln.start) * cps)); curY = ln.y; }
+        for (const c of chs) if (t >= c.pt) { c.vis = true; mixc(c.c, WHITE, c.fc, clamp((t - c.pt) / 0.3)); }
+        return t > start + 0.35;
+      },
+    };
   },
 
   burn(chs) {
-    const SY = "'.▖▙█▜▀▝.".split(""), ASH = mix(BG, [150, 150, 150], 0.22);
-    chs.forEach(c => { c.vis = true; c.s = c.fin; c.c = ASH; c.ig = (B.y1 - c.ty) / B.h * 1.6 + R() * 0.6 + Math.abs(c.tx - B.cx) / B.w * 0.35; c.sm = false; });
-    const parts = []; let t = 0;
-    return { parts, update(dt) {
-      t += dt; let done = true;
-      for (const c of chs) {
-        const lt = t - c.ig; if (lt < 0) { done = false; continue; }
-        if (lt < 0.6) {
-          done = false; c.s = SY[Math.min(SY.length - 1, Math.floor(lt / 0.6 * SY.length))]; c.c = fire(lt / 0.6);
-          if (!c.sm && R() < 0.12) { c.sm = true; parts.push({ x: c.tx, y: c.ty, s: pick([".", "·", "°", "˙"]), c: [120, 120, 120], a: 0.8, vy: -(2 + R() * 4), life: 1 }); }
-        } else { const k = clamp((lt - 0.6) / 0.5); c.s = c.fin; c.c = mix(FIRE[3], c.fc, k); if (k < 1) done = false; }
-      }
-      for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; p.y += p.vy * dt; p.life -= dt; p.a = Math.max(0, p.life * 0.8); if (p.life <= 0) parts.splice(i, 1); }
-      return done && !parts.length;
-    } };
+    const SY = "'.▖▙█▜▀▝.".split(""), ASH = mix(BG, [150, 150, 150], 0.22), SMOKE = [120, 120, 120];
+    chs.forEach(c => { c.vis = true; c.s = c.fin; cp(c.c, ASH); c.ig = (B.y1 - c.ty) / B.h * 1.6 + R() * 0.6 + Math.abs(c.tx - B.cx) / B.w * 0.35; c.sm = false; });
+    const sm = []; let t = 0;
+    return {
+      over(e) { for (const p of sm) e(p.x, p.y, p.s, SMOKE, Math.max(0, p.life * 0.8)); },
+      update(dt) {
+        t += dt; let done = true;
+        for (const c of chs) {
+          const lt = t - c.ig; if (lt < 0) { done = false; continue; }
+          if (lt < 0.6) {
+            done = false; c.s = SY[Math.min(SY.length - 1, Math.floor(lt / 0.6 * SY.length))]; fire(lt / 0.6, c.c);
+            if (!c.sm && R() < 0.12 * DETAIL) { c.sm = true; sm.push({ x: c.tx, y: c.ty, s: pick([".", "·", "°", "˙"]), vy: -(2 + R() * 4), life: 1 }); }
+          } else { const k = clamp((lt - 0.6) / 0.5); c.s = c.fin; mixc(c.c, FIRE[3], c.fc, k); if (k < 1) done = false; }
+        }
+        for (let i = sm.length - 1; i >= 0; i--) { const p = sm[i]; p.y += p.vy * dt; p.life -= dt; if (p.life <= 0) sm.splice(i, 1); }
+        return done && !sm.length;
+      },
+    };
   },
 
   expand(chs) {
-    chs.forEach(c => { c.vis = true; c.s = c.fin; c.sx = B.cx + (R() - .5) * 2; c.sy = B.cy + (R() - .5); c.d = R() * 0.35; });
+    chs.forEach(c => { c.vis = true; c.sx = B.cx + (R() - .5) * 2; c.sy = B.cy + (R() - .5); c.d = R() * 0.35; });
     let t = 0;
     return { update(dt) {
       t += dt; let done = true;
-      for (const c of chs) { const k = clamp((t - c.d) / 1.3), e = easeExpo(k); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, e); c.y = lerp(c.sy, c.ty, e); c.c = mix(WHITE, c.fc, k); }
+      for (const c of chs) { const k = clamp((t - c.d) / 1.3), e = easeExpo(k); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, e); c.y = lerp(c.sy, c.ty, e); morph(c, k); mixc(c.c, WHITE, c.fc, k); }
       return done;
     } };
   },
@@ -489,16 +647,16 @@ const EFFECTS = {
         const k = clamp((t - c.d) / c.dur), e = easeInOut(k); if (k < 1) done = false;
         c.x = lerp(c.sx, c.tx, e); c.y = lerp(c.sy, c.ty, e);
         if (k < 0.92) { c.nt -= dt; if (c.nt <= 0) { c.nt = 0.08; c.s = pick(GLY); } } else c.s = c.fin;
-        c.c = mix(DIM(c.fc, 0.5), c.fc, e);
+        mixc(T1, BG, c.fc, 0.5); mixc(c.c, T1, c.fc, e);
       }
       return done;
     } };
   },
 
   sweep(chs) {
-    const fx = R() < .5, fy = R() < .5, SEQ = ["░", "▒", "▓"];
+    const fx = R() < .5, fy = R() < .5, SEQ = ["░", "▒", "▓"], HI = mix(ACC, WHITE, .3);
     const dist = c => (fx ? B.x1 - c.tx : c.tx - B.x0) + (fy ? B.y1 - c.ty : c.ty - B.y0) * 1.5;
-    const maxD = B.w + B.h * 1.5, speed = (maxD + 1) / 1.4;
+    const speed = (B.w + B.h * 1.5 + 1) / 1.4;
     chs.forEach(c => { c.vis = false; c.d = dist(c) / speed; });
     let t = 0;
     return { update(dt) {
@@ -506,8 +664,8 @@ const EFFECTS = {
       for (const c of chs) {
         const lt = t - c.d; if (lt < 0) { done = false; continue; }
         c.vis = true;
-        if (lt < 0.24) { done = false; c.s = SEQ[Math.floor(lt / 0.08)]; c.c = ACC; }
-        else { const k = clamp((lt - 0.24) / 0.5); c.s = c.fin; c.c = mix(mix(ACC, WHITE, .3), c.fc, k); if (k < 1) done = false; }
+        if (lt < 0.24) { done = false; c.s = SEQ[Math.floor(lt / 0.08)]; cp(c.c, ACC); }
+        else { const k = clamp((lt - 0.24) / 0.5); c.s = c.fin; mixc(c.c, HI, c.fc, k); if (k < 1) done = false; }
       }
       return done;
     } };
@@ -522,18 +680,18 @@ const EFFECTS = {
       for (const c of chs) {
         const lt = t - c.d; if (lt < 0) { done = false; continue; }
         c.vis = true;
-        if (lt < 0.35) { done = false; c.s = E[Math.min(7, Math.floor(lt / 0.35 * 8))]; c.c = WC; }
-        else { const k = clamp((lt - 0.35) / 0.6); c.s = c.fin; c.c = mix(WC, c.fc, k); if (k < 1) done = false; }
+        if (lt < 0.35) { done = false; c.s = E[Math.min(7, Math.floor(lt / 0.35 * 8))]; cp(c.c, WC); }
+        else { const k = clamp((lt - 0.35) / 0.6); c.s = c.fin; mixc(c.c, WC, c.fc, k); if (k < 1) done = false; }
       }
       return done;
     } };
   },
 
   spotlights(chs) {
-    chs.forEach(c => { c.vis = true; c.s = c.fin; c.c = BG; });
-    const k = chh / cw, rad = Math.max(6, Math.min(B.w, B.h * k) * 0.28);
+    chs.forEach(c => { c.vis = true; cp(c.c, BG); });
+    const rad = Math.max(6, Math.min(B.w, B.h * K) * 0.28);
     const L = Array.from({ length: 3 }, () => ({ x: B.x0 + R() * B.w, y: B.y0 + R() * B.h, vx: (R() - .5) * B.w * 0.9, vy: (R() - .5) * B.h * 0.9 }));
-    const maxR = Math.hypot(B.w, B.h * k) * 0.6 + 6;
+    const maxR = Math.hypot(B.w, B.h * K) * 0.6 + 6;
     let t = 0;
     return { update(dt) {
       t += dt;
@@ -544,10 +702,356 @@ const EFFECTS = {
       const r = t < 3.1 ? rad : lerp(rad, maxR, easeOut(clamp((t - 3.1) / 1.1)));
       for (const c of chs) {
         let b = 0;
-        for (const l of L) b = Math.max(b, clamp(1 - Math.hypot(c.tx - l.x, (c.ty - l.y) * k) / r));
-        c.c = mix(BG, c.fc, Math.max(0.05, Math.pow(b, 0.7)));
+        for (const l of L) b = Math.max(b, clamp(1 - Math.hypot(c.tx - l.x, (c.ty - l.y) * K) / r));
+        mixc(c.c, BG, c.fc, Math.max(0.05, Math.pow(b, 0.7)));
       }
       return t > 4.3;
+    } };
+  },
+
+  // ---------------------------------------------------------------- new ones
+  thunder(chs) {
+    chs.forEach(c => { c.vis = false; c.lit = -1; c.big = false; });
+    const BOLT = mix(WHITE, ACC, 0.25), DRIZ = mix(BG, ACC, 0.6), SPARK = ["*", "+", "x", "#"];
+    const N = 7, strikes = [];
+    for (let i = 0; i < N; i++) {
+      const big = i === N - 1, tg = big ? { tx: Math.round(B.cx), ty: Math.round(B.cy) } : pick(chs);
+      strikes.push({ t: 0.4 + i * 0.42 + R() * 0.15, x: tg.tx, y: tg.ty, big, path: null });
+    }
+    const bolt = (x, y) => {
+      const p = [];
+      const walk = (sx, sy, ey, aim, branch) => {
+        let cx = sx;
+        for (let yy = sy; yy <= ey; yy++) {
+          const toward = aim == null ? 0 : Math.sign(aim - cx);
+          const st = R() < 0.55 ? toward : ri(-1, 1);
+          p.push(cx, yy, st < 0 ? "/" : st > 0 ? "\\" : "|");
+          if (!branch && R() < 0.06 && yy < ey - 4) walk(cx, yy + 1, Math.min(ey, yy + ri(3, 7)), cx + (R() < .5 ? -12 : 12), true);
+          cx += st;
+        }
+      };
+      walk(x + ri(-10, 10), 0, y, x, false);
+      return p;
+    };
+    const drops = Array.from({ length: Math.round(cols * 0.35 * DETAIL) }, () => ({ x: R() * cols, y: R() * rows, v: rows * (0.9 + R() * 0.6) }));
+    const lastT = strikes[N - 1].t;
+    let t = 0, rainA = 0;
+    return {
+      under(e) { if (rainA > 0.01) for (const d of drops) e(Math.floor(d.x), Math.floor(d.y), "/", DRIZ, 0.4 * rainA); },
+      over(e) {
+        for (const s of strikes) {
+          const lt = t - s.t; if (lt < 0 || lt > 0.32 || !s.path) continue;
+          const a = (lt < 0.08 || (lt > 0.15 && lt < 0.21)) ? 1 : 0.35;
+          for (let i = 0; i < s.path.length; i += 3) e(s.path[i], s.path[i + 1], s.path[i + 2], BOLT, a);
+        }
+      },
+      update(dt) {
+        t += dt;
+        rainA = clamp(t / 0.5) * (1 - clamp((t - lastT - 0.5) / 0.8));
+        for (const d of drops) { d.y += d.v * dt; d.x -= d.v * 0.35 * dt; if (d.y >= rows) { d.y -= rows; d.x = R() * cols; } if (d.x < 0) d.x += cols; }
+        for (const s of strikes) {
+          if (s.path || t < s.t) continue;
+          s.path = bolt(s.x, s.y); flash = Math.max(flash, s.big ? 0.6 : 0.28);
+          const r = 5 + R() * 8;
+          for (const c of chs) if (s.big || (c.lit < 0 && Math.hypot(c.tx - s.x, (c.ty - s.y) * K) < r)) { c.lit = t; c.vis = true; c.big = s.big; }
+        }
+        for (const c of chs) {
+          if (c.lit < 0) continue;
+          const lt = t - c.lit;
+          if (lt < 0.12) { c.s = pick(SPARK); cp(c.c, WHITE); }
+          else { c.s = c.fin; mixc(T1, BG, c.fc, c.big ? 1 : 0.45); mixc(c.c, WHITE, T1, clamp((lt - 0.12) / 0.5)); }
+        }
+        return t > lastT + 1.4;
+      },
+    };
+  },
+
+  funnel(chs) {
+    const neck = { x: Math.round(B.cx), y: Math.max(1, B.y0 - 4) };
+    const topW = Math.min(cols * 0.45, B.w * 0.9 + 10), WALL = mix(BG, ACC, 0.55), GR = [".", ":", "'"];
+    chs.forEach(c => { c.vis = false; c.sx = neck.x + (R() - .5) * 2 * topW; c.sy = -2 - R() * 3; c.d = R() * 1.4 + Math.abs(c.tx - B.cx) / B.w * 0.5; });
+    const D1 = 0.5, D2 = 0.85;
+    let t = 0, wallA = 0;
+    return {
+      under(e) {
+        if (wallA <= 0.01) return;
+        for (let y = 0; y <= neck.y; y++) {
+          const half = lerp(topW, 1.5, y / Math.max(1, neck.y));
+          e(Math.round(neck.x - half - 1), y, "\\", WALL, wallA); e(Math.round(neck.x + half + 1), y, "/", WALL, wallA);
+        }
+      },
+      update(dt) {
+        t += dt; let done = true; wallA = clamp(t / 0.4) * (1 - clamp((t - 2.3) / 0.6));
+        for (const c of chs) {
+          const lt = t - c.d; if (lt < 0) { done = false; continue; }
+          c.vis = true;
+          if (lt < D1) { done = false; const k = lt / D1, e = k * k; c.x = lerp(c.sx, neck.x, e); c.y = lerp(c.sy, neck.y, e); c.s = GR[(c.tx + c.ty) % 3]; cp(c.c, ACC); }
+          else { const k = clamp((lt - D1) / D2), e = easeOut(k); c.x = lerp(neck.x, c.tx, e); c.y = lerp(neck.y, c.ty, e); morph(c, k); mixc(c.c, ACC, c.fc, k); if (k < 1) done = false; }
+        }
+        return done && t > 2.9;
+      },
+    };
+  },
+
+  blackhole(chs) {
+    const cx = B.cx, cy = B.cy, maxR = Math.hypot(cols, rows * K) / 2, CORE = ["@", "O", "o", "*"], DIMA = mix(BG, ACC, 0.5);
+    chs.forEach(c => { c.vis = true; c.a0 = R() * Math.PI * 2; c.r0 = maxR * (0.6 + R() * 0.6); c.rr = 1.5 + R() * 3; c.spin = 1.5 + R() * 1.5; c.d = R() * 0.4; c.s = pick(GLY); c.ex = 0; c.ey = 0; });
+    const P1 = 1.6, P2 = 2.2, P3 = 1.2;
+    let t = 0, boomed = false;
+    return {
+      over(e) { if (t > 0.3 && t < P2) e(Math.round(cx), Math.round(cy), CORE[(t * 12 | 0) % 4], WHITE, 1); },
+      update(dt) {
+        t += dt; let done = true;
+        if (t >= P2 && !boomed) { boomed = true; flash = Math.max(flash, 0.35); }
+        for (const c of chs) {
+          if (t < P2) {
+            done = false;
+            const k = clamp((t - c.d) / (P1 - c.d)), e = easeInOut(k);
+            const r = lerp(c.r0, c.rr, e), a = c.a0 + t * c.spin * (1 + 3 * e);
+            c.x = cx + Math.cos(a) * r; c.y = cy + Math.sin(a) * r / K; c.ex = c.x; c.ey = c.y;
+            mixc(c.c, DIMA, WHITE, e); if (R() < 0.1) c.s = pick(GLY);
+          } else {
+            const k = clamp((t - P2) / P3), e = easeExpo(k);
+            c.x = lerp(c.ex, c.tx, e); c.y = lerp(c.ey, c.ty, e); morph(c, k); mixc(c.c, WHITE, c.fc, k); if (k < 1) done = false;
+          }
+        }
+        return done;
+      },
+    };
+  },
+
+  vortex(chs) {
+    const cx = B.cx, cy = B.cy; let maxd = 1;
+    chs.forEach(c => { const dx = c.tx - cx, dy = (c.ty - cy) * K; c.r = Math.hypot(dx, dy); c.ang = Math.atan2(dy, dx); if (c.r > maxd) maxd = c.r; c.vis = false; });
+    chs.forEach(c => { c.d = c.r / maxd * 0.7 + R() * 0.2; });
+    const SPIN = Math.PI * 3;
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        const k = clamp((t - c.d) / 1.5); if (k <= 0) { done = false; continue; }
+        c.vis = true; const e = easeOut(k);
+        const a = c.ang + SPIN * (1 - e), r = c.r * (0.15 + 0.85 * e);
+        c.x = cx + Math.cos(a) * r; c.y = cy + Math.sin(a) * r / K;
+        morph(c, k); grad((c.r / maxd + t * 0.6) % 1, T1); mixc(c.c, T1, c.fc, e); if (k < 1) done = false;
+      }
+      return done;
+    } };
+  },
+
+  bounce(chs) {
+    chs.forEach(c => { c.vis = false; c.s = c.fin; c.sy = c.ty - rows * 0.7 - R() * 4; c.d = (c.tx - B.x0) / B.w * 0.7 + R() * 0.15; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        if (t < c.d) { done = false; continue; }
+        c.vis = true; const k = clamp((t - c.d) / 1.2); if (k < 1) done = false;
+        c.y = lerp(c.sy, c.ty, easeBounce(k)); mixc(c.c, ACC, c.fc, clamp(k * 1.5));
+      }
+      return done;
+    } };
+  },
+
+  glitch(chs) {
+    const ys = [...new Set(chs.map(c => c.ty))], off = new Map();
+    const RED = [255, 60, 90], CYAN = [60, 230, 255], GL = ["▓", "▒", "░", "#", "@", "%", "&", "$"], DUR = 2.2;
+    chs.forEach(c => { c.vis = false; c.s = c.fin; c.d = R() * 0.7; c.gh = 0; c.gl = null; c.tint = 1; });
+    let t = 0, nt = 0, amp = 1;
+    return {
+      under(e) {
+        if (amp < 0.15) return;
+        for (const c of chs) if (c.vis && c.gh) { e(c.x - 1, c.y, c.s, RED, 0.55 * amp); e(c.x + 1, c.y, c.s, CYAN, 0.55 * amp); }
+      },
+      update(dt) {
+        t += dt; amp = clamp(1 - t / DUR); nt -= dt;
+        if (nt <= 0) {
+          nt = 0.05 + R() * 0.07; off.clear();
+          const ns = ri(2, 6);
+          for (let i = 0; i < ns; i++) { const y0 = pick(ys), h = ri(1, 4), o = Math.round((R() - .5) * 2 * amp * B.w * 0.25); for (let j = 0; j < h; j++) off.set(y0 + j, o); }
+          for (const c of chs) { c.gh = R() < 0.18 * amp ? 1 : 0; c.gl = R() < 0.12 * amp ? pick(GL) : null; c.tint = R(); c.blink = R() < 0.06 * amp; }
+        }
+        for (const c of chs) {
+          if (t < c.d) continue;
+          c.vis = !c.blink; c.x = c.tx + (off.get(c.ty) || 0); c.s = c.gl || c.fin;
+          if (c.tint < 0.1 * amp) cp(c.c, RED); else if (c.tint < 0.2 * amp) cp(c.c, CYAN); else mixc(c.c, c.fc, WHITE, 0.4 * amp * R());
+        }
+        if (t >= DUR) { for (const c of chs) { c.vis = true; c.x = c.tx; c.s = c.fin; cp(c.c, c.fc); } return true; }
+        return false;
+      },
+    };
+  },
+
+  unstable(chs) {
+    const pos = shuffle(chs.map(c => [c.tx, c.ty]));
+    chs.forEach((c, i) => { c.vis = true; c.s = c.fin; c.ux = pos[i][0]; c.uy = pos[i][1]; c.d = 1.3 + R() * 0.5; });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true; const shake = clamp(t / 1.3) * 0.6;
+      for (const c of chs) {
+        if (t < c.d) {
+          done = false; c.x = c.ux + (R() - .5) * shake * 2; c.y = c.uy + (R() - .5) * shake;
+          mixc(c.c, c.fc, WHITE, shake * 0.6 * R()); c.s = R() < shake * 0.3 ? pick(GLY) : c.fin;
+        } else {
+          const k = clamp((t - c.d) / 0.9), e = easeBack(k);
+          c.x = lerp(c.ux, c.tx, e); c.y = lerp(c.uy, c.ty, e); morph(c, k); mixc(c.c, WHITE, c.fc, k); if (k < 1) done = false;
+        }
+      }
+      return done;
+    } };
+  },
+
+  fireworks(chs) {
+    const sorted = chs.slice().sort((a, b) => a.tx - b.tx || a.ty - b.ty);
+    const NG = clamp(Math.round(chs.length / 150), 4, 10), groups = [];
+    for (let g = 0; g < NG; g++) {
+      const part = sorted.slice(Math.floor(g * sorted.length / NG), Math.floor((g + 1) * sorted.length / NG));
+      if (!part.length) continue;
+      let sx = 0, sy = 0; for (const c of part) { sx += c.tx; sy += c.ty; }
+      groups.push({ chs: part, bx: Math.round(sx / part.length), by: Math.max(2, sy / part.length - 2), col: grad(R()), boom: false });
+    }
+    shuffle(groups).forEach((g, i) => { g.launch = i * 0.28; g.E = g.launch + 0.6; });
+    chs.forEach(c => { c.vis = false; });
+    const SP = ["*", "+", ".", "o", "'"], TRAIL = mix(ACC, WHITE, .4);
+    let t = 0;
+    return {
+      over(e) {
+        for (const g of groups) {
+          const lt = t - g.launch; if (lt < 0 || lt >= 0.6) continue;
+          const y = lerp(rows + 1, g.by, easeOut(lt / 0.6));
+          e(g.bx, y, "|", TRAIL, 1); e(g.bx, y + 1, ".", TRAIL, 0.6); e(g.bx, y + 2, ".", TRAIL, 0.3);
+        }
+      },
+      update(dt) {
+        t += dt; let done = true;
+        for (const g of groups) {
+          const lt = t - g.E;
+          if (lt < 0) { done = false; continue; }
+          if (!g.boom) {
+            g.boom = true; flash = Math.max(flash, 0.1);
+            for (const c of g.chs) { const a = R() * Math.PI * 2, sp = 6 + R() * 16; c.x = g.bx; c.y = g.by; c.vx = Math.cos(a) * sp; c.vy = Math.sin(a) * sp / K; c.vis = true; }
+          }
+          for (const c of g.chs) {
+            if (lt < 0.55) {
+              done = false; const dr = Math.pow(0.15, dt);
+              c.vx *= dr; c.vy = c.vy * dr + 6 * dt; c.x += c.vx * dt; c.y += c.vy * dt;
+              c.s = SP[(c.tx + c.ty + (t * 15 | 0)) % 5]; mixc(c.c, WHITE, g.col, lt / 0.55); c.hx = c.x; c.hy = c.y;
+            } else {
+              const k = clamp((lt - 0.55) / 0.8), e = easeInOut(k);
+              c.x = lerp(c.hx, c.tx, e); c.y = lerp(c.hy, c.ty, e); morph(c, k); mixc(c.c, g.col, c.fc, k); if (k < 1) done = false;
+            }
+          }
+        }
+        return done;
+      },
+    };
+  },
+
+  ripple(chs) {
+    const cx = B.cx, cy = B.cy, RS = [".", "o", "O", "@"], RING = mix(ACC, WHITE, .3);
+    let maxd = 1;
+    chs.forEach(c => { c.dd = Math.hypot(c.tx - cx, (c.ty - cy) * K); if (c.dd > maxd) maxd = c.dd; c.vis = false; });
+    const speed = (maxd + 4) / 1.3, screenR = Math.hypot(cols, rows * K), rings = [0, 0.45, 0.9];
+    let t = 0;
+    return {
+      under(e) {
+        for (const d of rings) {
+          const r = (t - d) * speed * 1.2; if (r <= 0 || r > screenR) continue;
+          const a = 0.55 * (1 - r / screenR), n = Math.min(900, Math.ceil(2 * Math.PI * r * 1.2 * DETAIL));
+          for (let i = 0; i < n; i++) { const th = i / n * Math.PI * 2; e(Math.round(cx + Math.cos(th) * r), Math.round(cy + Math.sin(th) * r / K), "·", RING, a); }
+        }
+      },
+      update(dt) {
+        t += dt; let done = true; const R0 = t * speed;
+        for (const c of chs) {
+          const lt = (R0 - c.dd) / speed; if (lt < 0) { done = false; continue; }
+          c.vis = true;
+          if (lt < 0.32) { done = false; c.s = RS[Math.min(3, Math.floor(lt / 0.08))]; cp(c.c, RING); }
+          else { const k = clamp((lt - 0.32) / 0.5); c.s = c.fin; mixc(c.c, RING, c.fc, k); if (k < 1) done = false; }
+        }
+        return done && t > 2.6;
+      },
+    };
+  },
+
+  laser(chs) {
+    const ord = chs.slice().sort((a, b) => a.ty - b.ty || ((a.ty % 2) ? b.tx - a.tx : a.tx - b.tx));
+    ord.forEach((c, i) => { c.vis = false; c.et = 0.25 + i / ord.length * 2.4; c.lt0 = 0; });
+    const ex = R() < .5 ? 0 : cols - 1, ey = 0, BEAM = mix(ACC, WHITE, .5), HOT = [255, 236, 190];
+    let t = 0, idx = 0, tip = null; const sparks = [];
+    return {
+      over(e) {
+        e(ex, ey, "█", BEAM, 1);
+        if (tip) {
+          const dx = tip.tx - ex, dy = tip.ty - ey, n = Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)));
+          for (let i = 1; i < n; i++) e(Math.round(ex + dx * i / n), Math.round(ey + dy * i / n), "·", BEAM, 0.8);
+          e(tip.tx, tip.ty, "*", WHITE, 1);
+        }
+        for (const p of sparks) e(p.x, p.y, p.s, HOT, Math.min(1, p.life * 2));
+      },
+      update(dt) {
+        t += dt;
+        while (idx < ord.length && ord[idx].et <= t) {
+          const c = ord[idx++]; c.vis = true; c.lt0 = t; tip = c;
+          if (R() < 0.08 * DETAIL) sparks.push({ x: c.tx, y: c.ty, vx: (R() - .5) * 10, vy: -R() * 6, s: pick([".", "'", "*"]), life: 0.5 });
+        }
+        if (idx >= ord.length && t > ord[ord.length - 1].et + 0.1) tip = null;
+        for (let i = sparks.length - 1; i >= 0; i--) { const p = sparks[i]; p.vy += 14 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; if (p.life <= 0) sparks.splice(i, 1); }
+        let done = idx >= ord.length;
+        for (const c of chs) {
+          if (!c.vis) continue;
+          const lt = t - c.lt0;
+          if (lt < 0.15) { c.s = pick(MORPH); cp(c.c, HOT); }
+          else { const k = clamp((lt - 0.15) / 0.6); morph(c, k); mixc(c.c, HOT, c.fc, k); if (k < 1) done = false; }
+        }
+        return done && !sparks.length;
+      },
+    };
+  },
+
+  overflow(chs) {
+    const span = rows * 2, junk = [], maxLen = Math.max(6, Math.floor(cols * 0.5));
+    for (let y = -span; y < rows + span; y++) {
+      if (y >= B.y0 - 1 && y <= B.y1 + 1) continue;
+      if (R() < 0.15) continue;
+      const len = ri(5, maxLen), x0 = ri(0, Math.max(0, cols - len)), g = [];
+      for (let i = 0; i < len; i++) g.push(R() < 0.15 ? " " : pick(GLY));
+      junk.push({ y, x0, g, c: grad(R()), a: 0.25 + R() * 0.35 });
+    }
+    chs.forEach(c => { c.vis = true; c.s = c.fin; cp(c.c, c.fc); });
+    const DUR = 2.2;
+    let t = 0, off = span, fadeA = 1;
+    return {
+      under(e) {
+        if (fadeA <= 0.01) return;
+        for (const j of junk) {
+          const y = j.y + off; if (y < 0 || y >= rows) continue;
+          for (let i = 0; i < j.g.length; i++) if (j.g[i] !== " ") e(j.x0 + i, y, j.g[i], j.c, j.a * fadeA);
+        }
+      },
+      update(dt) {
+        t += dt; const k = clamp(t / DUR);
+        off = Math.round(span * Math.pow(1 - k, 4));
+        fadeA = 1 - clamp((t - DUR * 0.75) / (DUR * 0.35));
+        for (const c of chs) c.y = c.ty + off;
+        return t > DUR * 1.1 && fadeA <= 0;
+      },
+    };
+  },
+
+  condense(chs) {
+    chs.forEach(c => { c.vis = true; c.s = MORPH[0]; c.d = R() * 0.9 + (Math.abs(c.tx - B.cx) / B.w + Math.abs(c.ty - B.cy) / B.h) * 0.5; });
+    const DUR = 1.3;
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true; const fadeIn = clamp(t / 0.4);
+      for (const c of chs) {
+        const k = clamp((t - c.d) / DUR);
+        morph(c, k);
+        if (k < 1) { done = false; mixc(c.c, BG, c.fc, (0.15 + 0.6 * k) * fadeIn); }
+        else { const kk = clamp((t - c.d - DUR) / 0.35); mixc(c.c, WHITE, c.fc, kk); if (kk < 1) done = false; }
+      }
+      return done;
     } };
   },
 };
@@ -555,11 +1059,11 @@ const EFFECTS = {
 const EXITS = {
   dissolve(chs) {
     const SEQ = ["▓", "▒", "░"];
-    chs.forEach(c => { c.d = R() * 1.0; c.c0 = c.c; });
+    chs.forEach(c => { c.d = R() * 1.0; c.c0 = c.c.slice(); });
     let t = 0;
     return { update(dt) {
       t += dt;
-      for (const c of chs) { const lt = t - c.d; if (lt < 0) continue; if (lt >= 0.3) { c.vis = false; continue; } c.s = SEQ[Math.floor(lt / 0.1)]; c.c = mix(c.c0, BG, lt / 0.3); }
+      for (const c of chs) { const lt = t - c.d; if (lt < 0) continue; if (lt >= 0.3) { c.vis = false; continue; } c.s = SEQ[Math.min(2, Math.floor(lt / 0.1))]; mixc(c.c, c.c0, BG, lt / 0.3); }
       return t > 1.35;
     } };
   },
@@ -573,73 +1077,151 @@ const EXITS = {
     } };
   },
   fade(chs) {
-    chs.forEach(c => { c.c0 = c.c; });
+    chs.forEach(c => { c.c0 = c.c.slice(); });
     let t = 0;
-    return { update(dt) { t += dt; const k = clamp(t / 0.9); for (const c of chs) c.c = mix(c.c0, BG, k); return k >= 1; } };
+    return { update(dt) { t += dt; const k = clamp(t / 0.9); for (const c of chs) mixc(c.c, c.c0, BG, k); return k >= 1; } };
   },
-  scatterOut(chs) {
-    chs.forEach(c => { c.ex = R() * cols; c.ey = R() * rows; c.d = R() * 0.3; c.c0 = c.c; });
+  scatter(chs) {
+    chs.forEach(c => { c.ex = R() * cols; c.ey = R() * rows; c.d = R() * 0.3; c.c0 = c.c.slice(); });
     let t = 0;
     return { update(dt) {
       t += dt; let done = true;
       for (const c of chs) {
         const k = clamp((t - c.d) / 1.0), e = easeInOut(k); if (k < 1) done = false;
-        c.x = lerp(c.tx, c.ex, e); c.y = lerp(c.ty, c.ey, e); c.c = mix(c.c0, BG, e);
+        c.x = lerp(c.tx, c.ex, e); c.y = lerp(c.ty, c.ey, e); mixc(c.c, c.c0, BG, e);
         if (k > 0.1 && R() < 0.2) c.s = pick(GLY);
+      }
+      return done;
+    } };
+  },
+  funnel(chs) {
+    const neck = { x: Math.round(B.cx), y: Math.min(rows - 3, B.y1 + 3) }, WALL = mix(BG, ACC, 0.55);
+    chs.forEach(c => { c.d = (B.y1 - c.ty) / B.h * 0.5 + R() * 0.7; c.c0 = c.c.slice(); c.ex = neck.x + (R() - .5) * cols * 0.9; });
+    let t = 0, wallA = 0;
+    return {
+      under(e) {
+        if (wallA <= 0.01) return;
+        for (let y = neck.y; y < rows; y++) {
+          const half = lerp(1.5, cols * 0.45, (y - neck.y) / Math.max(1, rows - neck.y));
+          e(Math.round(neck.x - half - 1), y, "/", WALL, wallA); e(Math.round(neck.x + half + 1), y, "\\", WALL, wallA);
+        }
+      },
+      update(dt) {
+        t += dt; let done = true; wallA = clamp(t / 0.3) * (1 - clamp((t - 1.6) / 0.4));
+        for (const c of chs) {
+          const lt = t - c.d; if (lt < 0) { done = false; continue; }
+          if (lt < 0.5) { done = false; const k = lt / 0.5, e = k * k; c.x = lerp(c.tx, neck.x, e); c.y = lerp(c.ty, neck.y, e); c.s = MORPH[Math.max(0, MORPH.length - 1 - Math.floor(k * MORPH.length))]; mixc(c.c, c.c0, ACC, k); }
+          else { const k = clamp((lt - 0.5) / 0.6); c.x = lerp(neck.x, c.ex, k); c.y = lerp(neck.y, rows + 2, k * k); c.s = "."; if (k >= 1) c.vis = false; else done = false; }
+        }
+        return done && t > 2.0;
+      },
+    };
+  },
+  blackhole(chs) {
+    const cx = B.cx, cy = B.cy, CORE = ["@", "O", "o", "*"];
+    chs.forEach(c => { const dx = c.tx - cx, dy = (c.ty - cy) * K; c.r0 = Math.hypot(dx, dy); c.a0 = Math.atan2(dy, dx); c.d = R() * 0.4; c.c0 = c.c.slice(); });
+    let t = 0, boomed = false;
+    return {
+      over(e) { if (t < 1.75) e(Math.round(cx), Math.round(cy), CORE[(t * 12 | 0) % 4], WHITE, 1); },
+      update(dt) {
+        t += dt; let done = true;
+        for (const c of chs) {
+          const k = clamp((t - c.d) / 1.2), e = k * k;
+          const r = c.r0 * (1 - e), a = c.a0 + e * Math.PI * 2.5;
+          c.x = cx + Math.cos(a) * r; c.y = cy + Math.sin(a) * r / K; mixc(c.c, c.c0, WHITE, e * 0.7);
+          if (R() < 0.05) c.s = pick(GLY);
+          if (k >= 1) c.vis = false; else done = false;
+        }
+        if (done && !boomed) { boomed = true; flash = Math.max(flash, 0.35); }
+        return done && t > 1.8;
+      },
+    };
+  },
+  shatter(chs) {
+    flash = Math.max(flash, 0.2);
+    chs.forEach(c => {
+      const dx = c.tx - B.cx, dy = (c.ty - B.cy) * K, d = Math.hypot(dx, dy) || 1, sp = 10 + R() * 18;
+      c.vx = dx / d * sp; c.vy = dy / d * sp / K - R() * 6; c.d = R() * 0.15;
+    });
+    let t = 0;
+    return { update(dt) {
+      t += dt; let done = true;
+      for (const c of chs) {
+        if (t < c.d) { done = false; continue; }
+        c.vy += rows * 0.6 * dt; c.x += c.vx * dt; c.y += c.vy * dt;
+        if (R() < 0.15) c.s = pick(GLY);
+        const k = clamp((t - c.d) / 1.1); c.a = 1 - k; if (k < 1) done = false;
       }
       return done;
     } };
   },
 };
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Cycle: effect in -> hold (with one shine) -> exit -> short gap -> repeat
-// ---------------------------------------------------------------------------
-let art = [], chars = [], phase = "idle", cur = null, t = 0, lastName = "", paused = !!window.TERMWALL_PAUSED;
-let rafOn = false, last = 0, sleepTimer = null, gen = 0;
+// ===========================================================================
+let art = [], chars = [], phase = "idle", cur = null, lastName = "", lastWeight = null, msg = null;
+let paused = !!window.TERMWALL_PAUSED, rafOn = false, last = 0, sleepTimer = null, gen = 0, pendingWake = null, loopId = 0;
+let frames = 0, fpsVal = 0, fpsT = 0, ticks = 0, rafHz = 0;
+const artCache = new Map();
 
-const QS = new URLSearchParams(location.search); // ?effect=matrix for testing in a browser
-const effectNames = () => { if (EFFECTS[QS.get("effect")]) return [QS.get("effect")]; const e = (C.effects || []).filter(n => EFFECTS[n]); return e.length ? e : ALL_EFFECTS; };
-function freshChars() { return art.map(c => ({ tx: c.x, ty: c.y, x: c.x, y: c.y, s: c.ch, fin: c.ch, fc: c.color, c: c.color, a: 1, vis: true })); }
+const pickOther = (list, prev) => { if (list.length < 2) return list[0]; let x; do x = pick(list); while (x === prev); return x; };
+const effectNames = () => { if (EFFECTS[FORCE]) return [FORCE]; const e = (C.effects || []).filter(n => EFFECTS[n]); return e.length ? e : ALL_EFFECTS; };
+const exitNames = () => { const e = (C.exits || []).filter(n => EXITS[n]); return e.length ? e : ALL_EXITS; };
+function freshChars() { return art.map(c => ({ tx: c.x, ty: c.y, x: c.x, y: c.y, s: c.ch, fin: c.ch, fc: c.color, c: c.color.slice(), a: 1, vis: true })); }
 
-function beginIn() {
-  chars = freshChars();
-  const names = effectNames();
-  let name = pick(names); if (names.length > 1) while (name === lastName) name = pick(names);
-  lastName = name; cur = EFFECTS[name](chars); phase = "in"; t = 0; wake();
+function render() {
+  Rn.begin(flash > 0.003 ? mixc(T3, BG, WHITE, Math.min(0.8, flash)) : BG);
+  if (cur && cur.under) cur.under(emit);
+  for (let i = 0; i < chars.length; i++) { const c = chars[i]; if (c.vis) emit(c.x, c.y, c.s, c.c, c.a); }
+  if (cur && cur.over) cur.over(emit);
+  if (msg) { const x0 = Math.floor((cols - msg.length) / 2), y = Math.floor(rows / 2), col = mix(BG, grad(0.5), 0.6); for (let i = 0; i < msg.length; i++) emit(x0 + i, y, msg[i], col, 1); }
+  Rn.end();
 }
+
+async function getArt(w) {
+  if (!artCache.has(w)) artCache.set(w, await buildArt(w));
+  return artCache.get(w);
+}
+
+async function beginIn(name) {
+  const g = gen;
+  const w = pickOther(WEIGHTS, lastWeight); lastWeight = w;
+  const a = await getArt(w);
+  if (g !== gen) return;
+  art = a.cells; B = a.B;
+  if (!art.length) { msg = "Add some words or a logo from the TermWall menu > Customize..."; chars = []; cur = null; render(); return; }
+  msg = null; chars = freshChars();
+  const n = name && EFFECTS[name] ? name : pickOther(effectNames(), lastName);
+  lastName = n; cur = EFFECTS[n](chars); phase = "in"; wake();
+}
+function holdSecs() { return Math.max(1, +C.holdSeconds || 8) / SPEED; }
 function beginHold() {
-  phase = "hold"; t = 0;
-  chars.forEach(c => { c.x = c.tx; c.y = c.ty; c.s = c.fin; c.c = c.fc; c.vis = true; c.a = 1; });
-  render(chars, null);
-  const hold = Math.max(1, +C.holdSeconds || 8) / Math.max(0.1, +C.speed || 1);
-  if (hold > 3) sleepFor(hold * 500, beginShine);
-  else sleepFor(hold * 1000, beginOut);
+  phase = "hold"; cur = null; flash = 0;
+  chars.forEach(c => { c.x = c.tx; c.y = c.ty; c.s = c.fin; cp(c.c, c.fc); c.vis = true; c.a = 1; });
+  render();
+  const h = holdSecs();
+  if (h > 3) sleepFor(h * 500, beginShine); else sleepFor(h * 1000, beginOut);
 }
 function beginShine() {
-  phase = "shine"; t = 0;
-  const span = B.w + B.h * 2 + 24;
+  phase = "shine";
+  const span = B.w + B.h * 2 + 24; let t = 0;
   cur = { update(dt) {
     t += dt; const b = -12 + t * span / 1.6;
-    for (const c of chars) { const d = (c.tx - B.x0) + (c.ty - B.y0) * 2, i = clamp(1 - Math.abs(d - b) / 7); c.c = mix(c.fc, WHITE, 0.5 * i * i); }
+    for (const c of chars) { const d = (c.tx - B.x0) + (c.ty - B.y0) * 2, i = clamp(1 - Math.abs(d - b) / 7); mixc(c.c, c.fc, WHITE, 0.5 * i * i); }
     return b > span;
   } };
   wake();
 }
-function afterShine() {
-  phase = "hold2"; chars.forEach(c => c.c = c.fc); render(chars, null);
-  const hold = Math.max(1, +C.holdSeconds || 8) / Math.max(0.1, +C.speed || 1);
-  sleepFor(Math.max(500, hold * 500 - 1600), beginOut);
-}
-function beginOut() { cur = pick(Object.values(EXITS))(chars); phase = "out"; t = 0; wake(); }
-function afterOut() { phase = "gap"; render([], null); sleepFor(600 / Math.max(0.1, +C.speed || 1), beginIn); }
+function afterShine() { phase = "hold2"; cur = null; chars.forEach(c => cp(c.c, c.fc)); render(); sleepFor(Math.max(500, holdSecs() * 500 - 1600), beginOut); }
+function beginOut() { cur = EXITS[pick(exitNames())](chars); phase = "out"; wake(); }
+function afterOut() { phase = "gap"; cur = null; chars = []; flash = 0; render(); sleepFor(600 / SPEED, () => beginIn()); }
 
 function sleepFor(ms, fn) {
   rafOn = false; clearTimeout(sleepTimer);
   const g = gen;
   sleepTimer = setTimeout(() => { if (g !== gen) return; if (paused) { pendingWake = fn; return; } fn(); }, ms);
 }
-let pendingWake = null, loopId = 0, frames = 0;
 function wake() {
   if (rafOn || paused) return;
   rafOn = true; last = performance.now();
@@ -650,13 +1232,16 @@ function wake() {
 
 function loop(now) {
   if (paused) { rafOn = false; return; }
-  const minDt = 1000 / clamp(+C.fps || 30, 5, 120);
-  if (now - last < minDt - 2) return;
-  const dt = Math.min(0.1, (now - last) / 1000) * clamp(+C.speed || 1, 0.1, 5);
+  ticks++;
+  const cap = +C.fps || 0;                       // 0 = match the display's refresh rate
+  if (cap > 0 && now - last < 1000 / cap - 1.5) return;
+  const dt = Math.min(0.1, (now - last) / 1000) * SPEED;
   last = now;
   const done = cur ? cur.update(dt) : true;
-  render(chars, cur && cur.parts, cur && cur.under);
+  flash = Math.max(0, flash - dt * 2.2);
+  render();
   frames++;
+  if (now - fpsT >= 1000) { fpsVal = Math.round(frames * 1000 / (now - fpsT)); rafHz = Math.round(ticks * 1000 / (now - fpsT)); frames = 0; ticks = 0; fpsT = now; }
   if (done) {
     if (phase === "in") beginHold();
     else if (phase === "shine") afterShine();
@@ -665,25 +1250,28 @@ function loop(now) {
 }
 
 async function start() {
-  gen++; clearTimeout(sleepTimer); rafOn = false;
-  setupGrid();
-  art = await buildArt();
-  if (!art.length) {
-    render([], null);
-    ctx.fillStyle = css(DIM(grad(0.5), 0.6));
-    ctx.fillText("Add some words or a logo from the TermWall menu → Customize…", W / 2, H / 2);
-    return;
-  }
-  beginIn();
+  gen++; clearTimeout(sleepTimer); rafOn = false; pendingWake = null;
+  setupGrid(); artCache.clear();
+  await beginIn();
 }
 
 window.termwall = {
-  next() { gen++; clearTimeout(sleepTimer); beginIn(); },
+  next() { gen++; clearTimeout(sleepTimer); pendingWake = null; beginIn(); },
+  play(name) { gen++; clearTimeout(sleepTimer); pendingWake = null; beginIn(name); },
   setPaused(p) {
     paused = !!p;
     if (paused) return;
     if (pendingWake) { const f = pendingWake; pendingWake = null; f(); }
     else if (phase === "in" || phase === "shine" || phase === "out") wake();
+  },
+  stats() { return JSON.stringify({ renderer: Rn.name, fps: fpsVal, rafHz, fpsCap: +C.fps || 0, cols, rows, chars: chars.length, phase, effect: lastName, weight: lastWeight, paused, canvas: [cvW, cvH] }); },
+  capture() { render(); return cv.toDataURL("image/png"); },
+  // Testing: step an effect deterministically and draw it at time `secs`.
+  sim(name, secs) {
+    gen++; clearTimeout(sleepTimer); rafOn = false;
+    chars = freshChars(); cur = (EFFECTS[name] || EXITS[name])(chars); flash = 0;
+    let tt = 0, done = false; while (tt < secs && !done) { done = cur.update(1 / 30); flash = Math.max(0, flash - 2.2 / 30); tt += 1 / 30; }
+    render(); return { name, t: +tt.toFixed(2), done };
   },
 };
 

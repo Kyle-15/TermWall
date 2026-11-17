@@ -8,7 +8,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/"
 cp wall.html "$APP/Contents/Resources/"
 swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/TermWall" Sources/main.swift \
-  -framework Cocoa -framework WebKit -framework SwiftUI
+  -framework Cocoa -framework WebKit -framework SwiftUI -framework IOKit
 codesign --force -s - "$APP" >/dev/null
 echo "Built $APP"
 if [[ "${1:-}" == "install" ]]; then
