@@ -81,6 +81,9 @@ const css = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
 const T1 = [0, 0, 0], T2 = [0, 0, 0], T3 = [0, 0, 0];
 
 const BG = hex(C.background), ACC = hex(C.accent), WHITE = [255, 255, 255];
+// A character landing: from a white glint (as bright as the flash setting allows) to its final colour.
+const TG = [0, 0, 0];
+const glint = (o, fc, k, peak = WHITE) => { mixc(TG, fc, peak, FL); return mixc(o, TG, fc, k); };
 const STOPS = (Array.isArray(C.gradient) && C.gradient.length ? C.gradient : ["#ffffff"]).map(hex);
 function grad(t, o = [0, 0, 0]) {
   t = clamp(t);
@@ -505,7 +508,7 @@ const EFFECTS = {
         if (t < c.lock) {
           done = false; c.nt -= dt;
           if (c.nt <= 0) { c.nt = 0.04 + R() * 0.09; c.s = pick(GLY); mixc(c.c, BG, grad(R(), T1), t < typeDur + 0.3 ? 0.4 : 0.55 + R() * 0.4); }
-        } else { const k = clamp((t - c.lock) / 0.35); c.s = c.fin; mixc(c.c, WHITE, c.fc, k); if (k < 1) done = false; }
+        } else { const k = clamp((t - c.lock) / 0.35); c.s = c.fin; glint(c.c, c.fc, k); if (k < 1) done = false; }
       }
       return done;
     } };
@@ -551,7 +554,7 @@ const EFFECTS = {
           if (c.lit < 0) continue;
           mixc(T1, BG, c.fc, 0.4);
           const d = dist(c);
-          if (front > 0 && d < front) { const kk = clamp((front - d) / 10); if (kk < 0.3) mixc(c.c, T1, WHITE, kk / 0.3); else mixc(c.c, WHITE, c.fc, (kk - 0.3) / 0.7); }
+          if (front > 0 && d < front) { const kk = clamp((front - d) / 10); mixc(T2, c.fc, WHITE, FL); if (kk < 0.3) mixc(c.c, T1, T2, kk / 0.3); else mixc(c.c, T2, c.fc, (kk - 0.3) / 0.7); }
           else mixc(c.c, BEAM, T1, clamp((t - c.lit) / 0.4));
         }
         return front > maxD + 12;
@@ -561,7 +564,7 @@ const EFFECTS = {
 
   matrix(chs) {
     chs.forEach(c => { c.vis = false; c.rev = -1; });
-    const byCol = byKey(chs, c => c.tx), HEAD = mix(ACC, WHITE, .65), REV = 1.4;
+    const byCol = byKey(chs, c => c.tx), HEAD = mix(ACC, WHITE, .65 * FL), REV = 1.4;
     const left = new Set(byCol.keys()), drops = [], maxDrops = Math.round(cols * 1.3 * DETAIL);
     let t = 0, allAt = -1;
     const spawn = col => { if (drops.length < maxDrops) drops.push({ x: col, y: -R() * rows * 0.4, v: rows * (0.45 + R() * 0.6), len: ri(6, 22), g: Array.from({ length: 24 }, () => pick(GLY)) }); };
@@ -623,7 +626,7 @@ const EFFECTS = {
         t += dt; curX = -1;
         const ln = lines.find(l => t >= l.start && t < l.end + 0.03);
         if (ln) { curX = Math.min(ln.x1 + 1, Math.floor(ln.x0 + (t - ln.start) * cps)); curY = ln.y; }
-        for (const c of chs) if (t >= c.pt) { c.vis = true; mixc(c.c, WHITE, c.fc, clamp((t - c.pt) / 0.3)); }
+        for (const c of chs) if (t >= c.pt) { c.vis = true; glint(c.c, c.fc, clamp((t - c.pt) / 0.3)); }
         return t > start + 0.35;
       },
     };
@@ -655,7 +658,7 @@ const EFFECTS = {
     let t = 0;
     return { update(dt) {
       t += dt; let done = true;
-      for (const c of chs) { const k = clamp((t - c.d) / 1.3), e = easeExpo(k); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, e); c.y = lerp(c.sy, c.ty, e); morph(c, k); mixc(c.c, WHITE, c.fc, k); }
+      for (const c of chs) { const k = clamp((t - c.d) / 1.3), e = easeExpo(k); if (k < 1) done = false; c.x = lerp(c.sx, c.tx, e); c.y = lerp(c.sy, c.ty, e); morph(c, k); glint(c.c, c.fc, k); }
       return done;
     } };
   },
@@ -831,10 +834,10 @@ const EFFECTS = {
             const k = clamp((t - c.d) / (P1 - c.d)), e = easeInOut(k);
             const r = lerp(c.r0, c.rr, e), a = c.a0 + t * c.spin * (1 + 3 * e);
             c.x = cx + Math.cos(a) * r; c.y = cy + Math.sin(a) * r / K; c.ex = c.x; c.ey = c.y;
-            mixc(c.c, DIMA, WHITE, e); if (R() < 0.1) c.s = pick(GLY);
+            mixc(T2, c.fc, WHITE, FL); mixc(c.c, DIMA, T2, e); if (R() < 0.1) c.s = pick(GLY);
           } else {
             const k = clamp((t - P2) / P3), e = easeExpo(k);
-            c.x = lerp(c.ex, c.tx, e); c.y = lerp(c.ey, c.ty, e); morph(c, k); mixc(c.c, WHITE, c.fc, k); if (k < 1) done = false;
+            c.x = lerp(c.ex, c.tx, e); c.y = lerp(c.ey, c.ty, e); morph(c, k); glint(c.c, c.fc, k); if (k < 1) done = false;
           }
         }
         return done;
@@ -916,7 +919,7 @@ const EFFECTS = {
           mixc(c.c, c.fc, WHITE, shake * 0.6 * FL * R()); c.s = R() < shake * 0.3 ? pick(GLY) : c.fin;
         } else {
           const k = clamp((t - c.d) / 0.9), e = easeBack(k);
-          c.x = lerp(c.ux, c.tx, e); c.y = lerp(c.uy, c.ty, e); morph(c, k); mixc(c.c, WHITE, c.fc, k); if (k < 1) done = false;
+          c.x = lerp(c.ux, c.tx, e); c.y = lerp(c.uy, c.ty, e); morph(c, k); glint(c.c, c.fc, k); if (k < 1) done = false;
         }
       }
       return done;
@@ -1023,8 +1026,8 @@ const EFFECTS = {
         for (const c of chs) {
           if (!c.vis) continue;
           const lt = t - c.lt0;
-          if (lt < 0.15) { c.s = pick(MORPH); cp(c.c, HOT); }
-          else { const k = clamp((lt - 0.15) / 0.6); morph(c, k); mixc(c.c, HOT, c.fc, k); if (k < 1) done = false; }
+          if (lt < 0.15) { c.s = pick(MORPH); glint(c.c, c.fc, 0, HOT); }
+          else { const k = clamp((lt - 0.15) / 0.6); morph(c, k); glint(c.c, c.fc, k, HOT); if (k < 1) done = false; }
         }
         return done && !sparks.length;
       },
@@ -1071,7 +1074,7 @@ const EFFECTS = {
         const k = clamp((t - c.d) / DUR);
         morph(c, k);
         if (k < 1) { done = false; mixc(c.c, BG, c.fc, (0.15 + 0.6 * k) * fadeIn); }
-        else { const kk = clamp((t - c.d - DUR) / 0.35); mixc(c.c, WHITE, c.fc, kk); if (kk < 1) done = false; }
+        else { const kk = clamp((t - c.d - DUR) / 0.35); glint(c.c, c.fc, kk); if (kk < 1) done = false; }
       }
       return done;
     } };
@@ -1346,6 +1349,24 @@ window.termwall = {
       }
       const full = r[0] === 0 && r[1] === 0 && r[2] === cols - 1 && r[3] === rows - 1;
       out[kind + ":" + n] = (full ? "full" : Math.round((r[2] - r[0] + 1) * (r[3] - r[1] + 1) / (cols * rows) * 100) + "%") + (miss ? ` OUTSIDE x${miss} by ${worst.toFixed(1)}` : "");
+    }
+    return out;
+  },
+  // Testing: for each entry effect, the peak share of characters much whiter than their final colour
+  // (a "white pop"), and the peak whole-screen flash, as seen with the current flash setting.
+  whiteness() {
+    gen++; clearTimeout(sleepTimer); rafOn = false;
+    const out = {}, lo = c => Math.min(c[0], c[1], c[2]);
+    for (const n of ALL_EFFECTS) {
+      rs = 12345; chars = freshChars(); cur = EFFECTS[n](chars); flash = 0;
+      let tt = 0, done = false, peak = 0, at = 0, fpk = 0;
+      while (tt < 8 && !done) {
+        done = cur.update(1 / 30); tt += 1 / 30;
+        let w = 0; for (const c of chars) if (c.vis && lo(c.c) - lo(c.fc) > 60) w++;
+        const f = w / chars.length; if (f > peak) { peak = f; at = tt; }
+        fpk = Math.max(fpk, flash * FL); flash = Math.max(0, flash - 2.2 / 30);
+      }
+      out[n] = [Math.round(peak * 100), +at.toFixed(2), +fpk.toFixed(2)];
     }
     return out;
   },
