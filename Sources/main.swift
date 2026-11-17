@@ -338,6 +338,19 @@ struct SettingsView: View {
                     LabeledContent("Speed") {
                         HStack { Slider(value: $model.cfg.speed, in: 0.3...2.5); Text(String(format: "%.1f×", model.cfg.speed)).monospacedDigit().frame(width: 44) }
                     }
+                    LabeledContent("Flashing lights") {
+                        HStack {
+                            Slider(value: $model.cfg.flashes, in: 0...1, step: 0.05)
+                            Text(model.cfg.flashes < 0.01 ? "Off" : "\(Int((model.cfg.flashes * 100).rounded()))%").monospacedDigit().frame(width: 44)
+                        }
+                    }
+                    HStack {
+                        Text("Screen flashes, lightning, bursts and glitch flicker.").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Off") { model.cfg.flashes = 0 }
+                        Button("Soft") { model.cfg.flashes = 0.35 }
+                        Button("Full") { model.cfg.flashes = 1 }
+                    }
                 }
 
                 Section("Performance & battery") {

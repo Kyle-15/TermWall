@@ -66,6 +66,7 @@ struct WallConfig: Codable, Equatable {
     var effects: [String] = allEffects
     var holdSeconds: Double = 8
     var speed: Double = 1
+    var flashes: Double = 1                    // flashing lights: 0 = off, 1 = full
     var asciiArt: String = ""
     // Performance & battery
     var fps: Double = 0                        // 0 = match the display
