@@ -1,0 +1,66 @@
+# TermWall
+
+An animated terminal-style wallpaper for macOS. Your words and/or logo are drawn out of block and ASCII characters, played in with one of 24 terminal text effects, held for a few seconds, then played out again. It lives on your desktop, behind your icons, not in the screen saver.
+
+Inspired by the look of the Omarchy screen saver.
+
+![TermWall holding its art](docs/hold.png)
+
+| | |
+|---|---|
+| ![Matrix](docs/matrix.png) | ![Thunder](docs/thunder.png) |
+| ![Funnel](docs/funnel.png) | ![Thin weight](docs/weight-thin.png) |
+
+## Features
+
+- **Your own art:** any words (several lines), any font, any logo image (PNG, SVG, JPEG, WebP…), or paste your own ASCII art.
+- **24 effects:** decrypt, rain, beams, matrix, slide, print, burn, expand, scatter, sweep, waves, spotlights, thunder, funnel, blackhole, vortex, bounce, glitch, unstable, fireworks, ripple, laser, overflow, condense. Plus 7 ways out: dissolve, fall, fade, scatter, funnel, blackhole, shatter. Moving characters are ASCII that gets denser as they travel and turn into blocks when they land.
+- **Font weights:** tick any of the nine weights (Ultralight to Black) and each animation uses a different one.
+- **Themes:** Tokyo Night, Catppuccin, Gruvbox, Nord, Everforest, Kanagawa, Rosé Pine, Matte Black, Matrix, Synthwave, or your own colors.
+- **Multiple screens:** every display gets its own copy, running at that display's refresh rate.
+- **Light on power:** drawn on the GPU in one call per frame, and nothing at all is drawn between animations. It can pause by itself when a game or window covers the desktop, on battery, or in Low Power Mode, and there are frame-rate, resolution and particle settings (with Max / Balanced / Battery saver presets).
+
+## Install
+
+**Download:** grab `TermWall.zip` from the [latest release](https://github.com/Kyle-15/TermWall/releases/latest), unzip it and move `TermWall.app` to Applications.
+
+The app isn't notarized by Apple, so the first launch is blocked. Either right-click the app → **Open** → **Open**, or run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/TermWall.app
+```
+
+**Build it yourself** (needs Xcode or the Command Line Tools):
+
+```bash
+git clone https://github.com/Kyle-15/TermWall.git
+cd TermWall
+./build.sh install
+```
+
+That builds `build/TermWall.app`, copies it to `~/Applications` and starts it.
+
+Requires macOS 14 or newer.
+
+## Use
+
+TermWall runs from the menu bar (the TV-with-sparkles icon):
+
+- **Customize…** words, font and weights, logo, theme and colors, effects, timing, and performance. Press **Apply** to see the changes.
+- **Next Effect**, **Pause**, **Reload**
+- **Start at Login** adds a login item so it comes back after a restart.
+- **Quit TermWall** gives you your normal wallpaper back.
+
+![Customize window](docs/settings.png)
+
+Settings are saved in `~/Library/Application Support/TermWall/config.json`. Logos you pick are copied into that folder too.
+
+## How it works
+
+`Sources/main.swift` is a small menu-bar app. For every screen it opens a borderless window at desktop level (above the real wallpaper, below the icons) that ignores the mouse, and shows `wall.html` in a WebKit view. The page turns your text and logo into a grid of quadrant-block characters and draws every frame with one instanced WebGL2 call from a glyph atlas (with a Canvas 2D fallback). The app watches the window list, battery and Low Power Mode and tells each screen when to pause.
+
+To try effects in a browser, serve the folder (`python3 -m http.server`) and open `wall.html?effect=thunder&text=HELLO&weights=200,900`.
+
+## License
+
+MIT

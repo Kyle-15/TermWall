@@ -12,7 +12,9 @@ import IOKit.ps
 
 let appName = "TermWall"
 let supportDir: URL = {
-    let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(appName)
+    // TERMWALL_HOME points at another config folder (handy for demos and testing).
+    let u = ProcessInfo.processInfo.environment["TERMWALL_HOME"].map { URL(fileURLWithPath: $0) }
+        ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(appName)
     try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
     return u
 }()
