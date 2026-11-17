@@ -245,7 +245,7 @@ const Atlas = {
   },
 };
 [...GLY, ...MORPH, ...QCHARS.slice(1), ...Object.keys(SHADE), ...Object.keys(EIGHTHS), "▄", "█",
-  "│", "¦", "|", ":", "'", ".", "·", "°", "˙", "*", "+", "x", "o", "O", "@", "/", "\\"].forEach(s => Atlas.idx(s));
+  "│", "¦", "|", ":", "'", ".", "·", "°", "˙", "*", "+", "x", "o", "O", "@", "/", "\\", "=", "-", ",", "`", "_", "(", ")", "[", "]", "<", ">", "#", "!", "8"].forEach(s => Atlas.idx(s));
 
 // ===========================================================================
 // Renderers: WebGL2 (one instanced draw call per frame) with a Canvas2D fallback
@@ -1166,7 +1166,370 @@ const EFFECTS = {
   },
 };
 
+// ---- Soldiers easter egg ---------------------------------------------------------------------------
+// Sprites face right and are mirrored for the left. Rows top to bottom; the last row is the feet.
+const MIRROR_CH = { "/": "\\", "\\": "/", "(": ")", ")": "(", "<": ">", ">": "<", "[": "]", "]": "[" };
+const mirrorRows = rows => {
+  const w = Math.max(...rows.map(r => r.length));
+  return rows.map(r => [...r.padEnd(w)].reverse().map(ch => MIRROR_CH[ch] || ch).join(""));
+};
+const LEGS = ["/ \\", " | "];
+// Weapons: how they look in the soldier's hands, where the muzzle is, and how they fire.
+const WEAPONS = {
+  rifle:   { arms: "/|==-", mx: 5, my: 2, every: [0.25, 0.4], speed: 160, blast: 1.0 },
+  mg:      { arms: "/|=##=", mx: 6, my: 2, every: [0.6, 0.9], burst: 7, gap: 0.06, speed: 180, blast: 0.7, jitter: 2.5 },
+  shotgun: { arms: "/|=]", mx: 4, my: 2, every: [0.65, 0.9], pellets: 5, spread: 0.22, speed: 140, blast: 0.6 },
+  rocket:  { head: "(o)=>", mx: 5, my: 1, every: [1.4, 1.8], speed: 75, blast: 2.3, rocket: true },
+  grenade: { head: "(o)/", mx: 4, my: 0, every: [1.2, 1.6], speed: 0, blast: 2.0, lob: true },
+};
+function trooper(weapon, legs, dir, holding = true) {
+  const w = WEAPONS[weapon] || WEAPONS.rifle;
+  const rows = [" _ ", w.head || "(o)", w.arms || "/|\\", " | ", legs];
+  if (weapon === "grenade" && holding) rows[0] = " _  o";             // grenade ready in the raised hand
+  return dir > 0 ? rows : mirrorRows(rows);
+}
+const HANDS_UP = legs => ["  _  ", "\\(o)/", "  |  ", "  |  ", " " + legs];
+const WALKIE = legs => [" _ !", "(o)]", "/|\\ ", " | ", legs];
+// A stable "random" glyph for scrambled text (no RNG calls while drawing).
+const scrambled = (i, k) => GLY[(((i * 73856093) ^ (k * 19349663)) >>> 0) % GLY.length];
+
+// A short scene before the squad attacks (one of several, at random).
+function makeIntro(gy, SOLDIER) {
+  const TALK = mix(ACC, WHITE, 0.6), CODE = mix(BG, ACC, 0.7), HAT = mix(ACC, WHITE, 0.35);
+  const walk = (t, rate) => LEGS[Math.floor(t / rate) % 2];
+  const person = (e, x, rowsS, col = SOLDIER) => {
+    x = Math.round(x);
+    rowsS.forEach((r, j) => { for (let i = 0; i < r.length; i++) if (r[i] !== " ") e(x + i, gy - rowsS.length + 1 + j, r[i], col, 1); });
+  };
+  // A line of speech above someone, with a little tail pointing at them. `shown(i)` decides each letter.
+  const bubble = (e, cx, text, shown) => {
+    const x0 = Math.round(clamp(cx - text.length / 2, 1, cols - text.length - 1)), y = Math.max(0, gy - 6);
+    let any = false;
+    for (let i = 0; i < text.length; i++) { const g = shown(i); if (g && g.ch !== " ") { e(x0 + i, y, g.ch, g.col, 1); any = true; } }
+    if (any) e(Math.round(clamp(cx, x0, x0 + text.length - 1)), y + 1, cx > x0 + text.length / 2 ? "/" : "\\", TALK, 0.7);
+  };
+  const say = (e, cx, text, k) => { const n = Math.floor(text.length * clamp(k)); bubble(e, cx, text, i => i < n ? { ch: text[i], col: TALK } : null); };
+  const line = (e, cx, text, t, start, len) => { if (t >= start && t < start + len) say(e, cx, text, (t - start) / Math.min(1, len * 0.45)); };
+  // Radio chatter: arrives as scrambled code, then decrypts left to right into words.
+  const coded = (e, cx, text, t, start, len) => {
+    if (t < start || t >= start + len) return;
+    const lt = t - start, typed = Math.floor(text.length * clamp(lt / 0.5)), solved = Math.floor(text.length * clamp((lt - 0.9) / 0.9)), k = Math.floor(t / 0.06);
+    bubble(e, cx, text, i => i >= typed ? null : i < solved ? { ch: text[i], col: TALK } : text[i] === " " ? null : { ch: scrambled(i, k), col: CODE });
+  };
+  const kind = window.TERMWALL_INTRO || pick(["scouts", "walkies", "binoculars", "radio", "sergeant"]);   // TERMWALL_INTRO: testing
+  if (kind === "scouts") {
+    // Two scouts creep in just past each edge of the screen, whisper across, and slip back out.
+    const L = 2, Rr = cols - 8;
+    const sneak = k => { k = clamp(k); return k - Math.sin(k * Math.PI * 4) / (Math.PI * 4); };   // stop-and-go
+    return { dur: 6.2, draw(e, t) {
+      const out = t > 5.4, k = out ? 1 - clamp((t - 5.4) / 0.6) : sneak(t / 1.6), moving = out || t < 1.6, rate = out ? 0.07 : 0.22;
+      const a = lerp(-8, L, k), b = lerp(cols + 2, Rr, k);
+      const la = moving ? walk(t, rate) : LEGS[0], lb = moving ? walk(t + 0.11, rate) : LEGS[0];
+      person(e, a, out ? HANDS_UP(la) : trooper("rifle", la, 1));
+      person(e, b, out ? HANDS_UP(lb) : trooper("rifle", lb, -1));
+      line(e, a + 2, "psst... I wonder if they'll notice this.", t, 1.8, 1.8);
+      line(e, b + 3, "Shh! Act natural.", t, 3.7, 1.5);
+    } };
+  }
+  if (kind === "walkies") {
+    // Two soldiers at opposite edges talk over walkie-talkies; each message decrypts as it arrives.
+    const L = 2, Rr = cols - 7;
+    return { dur: 7.4, draw(e, t) {
+      const out = t > 6.8, k = out ? 1 - clamp((t - 6.8) / 0.6) : easeOut(clamp(t / 0.9)), moving = out || t < 0.9;
+      const a = lerp(-7, L, k), b = lerp(cols + 2, Rr, k);
+      const la = moving ? walk(t, 0.12) : LEGS[0], lb = moving ? walk(t + 0.06, 0.12) : LEGS[0];
+      person(e, a, WALKIE(la)); person(e, b, mirrorRows(WALKIE(lb)));
+      coded(e, a + 2, "Bravo, this is Alpha. Eyes on the wallpaper.", t, 1.0, 2.8);
+      coded(e, b + 2, "Copy, Alpha. Squad is moving in.", t, 3.9, 2.8);
+    } };
+  }
+  if (kind === "binoculars") {
+    // A scout walks to the corner, has a long look through binoculars, and slips away.
+    const x = Math.min(cols - 6, Math.round(B.x1) + 4), from = cols + 4;
+    const glasses = [" _  ", "(o)8", "/|/ ", " | ", LEGS[0]];
+    return { dur: 5.0, draw(e, t) {
+      const px = t < 1 ? lerp(from, x, easeOut(t)) : t > 4.4 ? x + (t - 4.4) * 45 : x, walking = t < 1 || t > 4.4;
+      const looking = t >= 1 && t <= 4.4, face = looking && Math.floor(t / 0.5) % 2 ? 1 : -1;
+      person(e, px, looking ? (face > 0 ? glasses : mirrorRows(glasses)) : trooper("rifle", walking ? walk(t, 0.12) : LEGS[0], -1));
+      line(e, px + 2, "Target spotted. It's... huge.", t, 2.4, 1.8);
+    } };
+  }
+  if (kind === "radio") {
+    // A radio operator calls it in; base answers from off screen.
+    const fromLeft = R() < 0.5, x = fromLeft ? Math.max(1, Math.round(B.x0) - 8) : Math.min(cols - 6, Math.round(B.x1) + 4);
+    return { dur: 5.0, draw(e, t) {
+      const off = t < 1 ? (1 - t) * 28 : t > 4.4 ? (t - 4.4) * 45 : 0, px = x + (fromLeft ? -off : off), walking = t < 1 || t > 4.4;
+      const rowsS = WALKIE(walking ? walk(t, 0.12) : LEGS[0]);
+      person(e, px, fromLeft ? rowsS : mirrorRows(rowsS));
+      line(e, px + 2, "Eagle to base: wallpaper in sight.", t, 1.1, 1.6);
+      line(e, fromLeft ? cols - 16 : 16, "Copy. Sending everyone.", t, 2.8, 1.5);
+    } };
+  }
+  // The sergeant marches out, gives a speech, and steps aside for the charge.
+  const M = Math.round(B.cx) - 2, from = R() < 0.5 ? -1 : 1, start = from < 0 ? Math.max(-5, B.x0 - 26) : Math.min(cols, B.x1 + 24);
+  return { dur: 5.0, draw(e, t) {
+    const x = t < 1.2 ? lerp(start, M, easeOut(t / 1.2)) : t > 4.4 ? M - from * (t - 4.4) * 45 : M, walking = t < 1.2 || t > 4.4;
+    person(e, x, ["_=_", "", "", "", ""], HAT);
+    person(e, x, ["", "(o)", "/|\\", " | ", walking ? walk(t, 0.14) : LEGS[0]]);
+    line(e, x + 1, "That text has been up long enough!", t, 1.3, 1.6);
+    line(e, x + 1, "Troops... CHARGE!", t, 3.0, 1.3);
+  } };
+}
+
+// Shared by the squad and the airstrike: blasts that break the art into chunks which fly apart and fall,
+// each shrinking block -> * -> . -> gone, plus the fire rings.
+function blastKit(chs, hits) {
+  chs.forEach(c => { c.hit = -1; });
+  const kit = {
+    alive: chs.length, booms: [],
+    // How big a basic blast is so that `hits` of them get through most of the art.
+    rBase: Math.max(1.1, Math.sqrt(chs.length * K / (Math.max(1, hits) * 0.5) / Math.PI)),
+    FIRE: mix(ACC, [255, 170, 60], 0.55 + 0.35 * FL), SMOKE: mix(BG, WHITE, 0.35),
+    knockDown(c, vx, vy, when) { c.hit = when; c.vx = vx; c.vy = vy; kit.alive--; },
+    impact(x, y, blast, t) {
+      const r = kit.rBase * blast;
+      for (const c of chs) {
+        if (c.hit >= 0) continue;
+        const dx = c.tx - x, dy = (c.ty - y) * K, d = Math.hypot(dx, dy);
+        if (d > r) continue;
+        const sp = (4 + R() * 10) * (0.6 + blast * 0.4), n = d || 1;
+        kit.knockDown(c, dx / n * sp + (R() - 0.5) * 3, dy / n * sp / K * 0.6 - (2 + R() * 5), t);
+      }
+      kit.booms.push({ x, y, t0: t, size: blast });
+    },
+    target() {
+      for (let i = 0; i < 24; i++) { const c = chs[Math.floor(R() * chs.length)]; if (c.hit < 0) return c; }
+      return chs.find(c => c.hit < 0);
+    },
+    collapse(t) { for (const c of chs) if (c.hit < 0) kit.knockDown(c, (R() - 0.5) * 8, -(1 + R() * 4), t + R() * 0.4); },
+    // Moves the falling chunks; returns whether any are still visible.
+    step(dt, t) {
+      let pieces = false;
+      for (const c of chs) {
+        if (c.hit < 0 || t < c.hit) continue;
+        const lt = t - c.hit;
+        c.vy += 38 * dt; c.x += c.vx * dt; c.y += c.vy * dt;
+        c.s = lt < 0.3 ? c.fin : lt < 0.6 ? "*" : lt < 0.95 ? "." : " ";
+        c.vis = lt < 0.95; if (c.vis) pieces = true;
+      }
+      return pieces;
+    },
+    drawBooms(e, t) {
+      const BOOM = mix(kit.FIRE, WHITE, 0.3 * FL);
+      for (const b of kit.booms) {
+        const age = t - b.t0, life = b.size > 1.5 ? 0.4 : 0.12; if (age > life || age < 0) continue;
+        const k = age / life, a = 1 - k;
+        if (b.size <= 1.5) { e(Math.round(b.x), Math.round(b.y), "*", kit.FIRE, a); continue; }
+        const rr = kit.rBase * b.size * (0.3 + 0.8 * k), n = Math.round(8 + rr * 5);
+        for (let i = 0; i < n; i++) {
+          const an = i / n * Math.PI * 2;
+          e(Math.round(b.x + Math.cos(an) * rr), Math.round(b.y + Math.sin(an) * rr / K), k < 0.35 ? "@" : k < 0.7 ? "#" : "+", k < 0.3 ? BOOM : kit.FIRE, a);
+        }
+        if (k < 0.4) e(Math.round(b.x), Math.round(b.y), "*", BOOM, 1);
+      }
+    },
+    boomsDone(t) { return !kit.booms.length || t - kit.booms[kit.booms.length - 1].t0 > 0.4; },
+  };
+  return kit;
+}
+
+let callStrike = false;
 const EXITS = {
+  // Easter egg (not in the settings list): a squad marches in, shoots the art to pieces and runs away.
+  // Every so often it's the super-secret airstrike instead.
+  soldiers(chs) {
+    if (callStrike || window.TERMWALL_STRIKE || R() < 0.12) { callStrike = false; return EXITS.airstrike(chs); }
+    const side = pick(["left", "right", "both"]);
+    const gy = Math.min(rows - 1, Math.round(B.y1) + 8);                 // the row their feet are on (room above for speech)
+    const per = Math.round(clamp(B.h / 3.5, 6, 10)), troops = [];
+    const MIX = ["rifle", "rifle", "rifle", "mg", "mg", "shotgun", "rocket", "grenade"];
+    // They line up along the ground below the art: each squad takes its half of the screen (or most of it alone).
+    const span = (side === "both" ? cols / 2 : cols * 0.8) - 10;
+    const enlist = dir => {
+      const n = Math.max(2, Math.min(per, Math.floor(span / 7))), gap = clamp(span / n, 7, 10);
+      for (let i = 0; i < n; i++) {
+        const weapon = i === 0 ? "rocket" : i === 1 ? "grenade" : i === 2 ? "mg" : pick(MIX);   // every squad brings the heavy stuff
+        const sx = dir > 0 ? 3 + i * gap : cols - 9 - i * gap;
+        const x0 = sx - dir * (cols * 0.5 + 12);                          // march in from off screen
+        troops.push({ dir, weapon, sx, x0, x: x0, y: gy - (i % 2), next: 1.5 + R() * 0.6 + i * 0.07, burst: 0, flashT: -9, gone: false });
+      }
+    };
+    if (side !== "right") enlist(1);
+    if (side !== "left") enlist(-1);
+    const kit = blastKit(chs, troops.length * 7);                         // about 7 blast-sized hits land per soldier
+    const SOLDIER = mix(ACC, WHITE, 0.15), BULLET = mix(ACC, WHITE, 0.3 + 0.4 * FL);
+    const MARCH = 1.4, CEASE = 4.6;
+    const shots = [], puffs = [];
+    const intro = makeIntro(gy, SOLDIER);
+    let t = -intro.dur, retreat = -1;                                     // the intro plays while t < 0
+    const spriteOf = tp => {
+      const walking = retreat >= 0 || Math.abs(tp.x - tp.sx) > 0.3;
+      const legs = walking ? LEGS[Math.floor(t / (retreat >= 0 ? 0.07 : 0.12)) % 2] : LEGS[0];
+      if (retreat >= 0) return HANDS_UP(legs);
+      return trooper(tp.weapon, legs, tp.dir, tp.weapon !== "grenade" || t - tp.flashT > 0.3);
+    };
+    const muzzle = tp => {
+      const w = WEAPONS[tp.weapon], rowsS = spriteOf(tp), width = Math.max(...rowsS.map(r => r.length));
+      return { x: Math.round(tp.x) + (tp.dir > 0 ? w.mx : width - 1 - w.mx), y: tp.y - 4 + w.my };
+    };
+    const fire = tp => {
+      const w = WEAPONS[tp.weapon], c = kit.target(); if (!c) return;
+      const m = muzzle(tp);
+      if (w.lob) {
+        // Grenade: thrown in an arc that lands on the target.
+        const T = 0.75 + R() * 0.3, G = 34, dx = c.tx - m.x, dy = c.ty - m.y;
+        shots.push({ kind: "grenade", x: m.x, y: m.y, vx: dx / T, vy: (dy - 0.5 * G * T * T) / T, g: G, left: T, tx: c.tx, ty: c.ty, blast: w.blast });
+      } else {
+        const n = w.pellets || 1;
+        for (let p = 0; p < n; p++) {
+          let tx = c.tx + (w.jitter ? (R() - 0.5) * w.jitter * 2 : 0), ty = c.ty + (w.jitter ? (R() - 0.5) * w.jitter : 0);
+          let dx = tx - m.x, dy = (ty - m.y) * K;
+          if (w.spread) { const a = (p - (n - 1) / 2) * w.spread / (n - 1) * 2, ca = Math.cos(a), sa = Math.sin(a); [dx, dy] = [dx * ca - dy * sa, dx * sa + dy * ca]; tx = m.x + dx; ty = m.y + dy / K; }
+          const dist = Math.hypot(dx, dy) || 1, T = dist / w.speed;
+          const steep = Math.abs(dy) > Math.abs(dx) * 0.6;
+          const glyph = w.rocket ? (dx > 0 ? "=>" : "<=") : w.pellets ? "·" : steep ? (dx * dy > 0 ? "\\" : "/") : "-";
+          shots.push({ kind: w.rocket ? "rocket" : "bullet", x: m.x, y: m.y, vx: dx / T, vy: dy / K / T, g: 0, left: T, tx, ty, blast: w.blast, glyph });
+        }
+      }
+      tp.flashT = t;
+      if (w.rocket) puffs.push({ x: Math.round(tp.x) + (tp.dir > 0 ? -1 : 4), y: tp.y - 3, life: 0.5 });   // back-blast
+    };
+    return {
+      over(e) {
+        if (t < 0) { intro.draw(e, t + intro.dur); return; }
+        for (const p of puffs) e(Math.round(p.x), Math.round(p.y), p.life > 0.25 ? "o" : "°", kit.SMOKE, clamp(p.life * 2));
+        for (const tp of troops) {
+          if (tp.gone) continue;
+          const rowsS = spriteOf(tp), x = Math.round(tp.x);
+          rowsS.forEach((r, j) => { for (let i = 0; i < r.length; i++) if (r[i] !== " ") e(x + i, tp.y - rowsS.length + 1 + j, r[i], SOLDIER, 1); });
+          if (retreat < 0 && t - tp.flashT < 0.06 && tp.weapon !== "grenade") { const m = muzzle(tp); e(m.x, m.y, "*", kit.FIRE, 1); }
+        }
+        for (const s of shots) {
+          if (s.kind === "grenade") e(Math.round(s.x), Math.round(s.y), Math.floor(s.left * 12) % 2 ? "o" : "O", SOLDIER, 1);
+          else if (s.kind === "rocket") { e(Math.round(s.x), Math.round(s.y), s.glyph[0], BULLET, 1); e(Math.round(s.x) + 1, Math.round(s.y), s.glyph[1], kit.FIRE, 1); }
+          else e(s.x, s.y, s.glyph, BULLET, 1);
+        }
+        kit.drawBooms(e, t);
+      },
+      update(dt) {
+        t += dt;
+        if (t < 0) return false;
+        for (const tp of troops) {
+          if (tp.gone) continue;
+          if (retreat < 0) {
+            tp.x = lerp(tp.x0, tp.sx, easeOut(clamp(t / MARCH)));
+            if (t >= tp.next && t < CEASE && kit.alive > 0) {
+              const w = WEAPONS[tp.weapon];
+              fire(tp);
+              if (w.burst) { tp.burst = (tp.burst || w.burst) - 1; tp.next = t + (tp.burst > 0 ? w.gap : w.every[0] + R() * (w.every[1] - w.every[0])); }
+              else tp.next = t + w.every[0] + R() * (w.every[1] - w.every[0]);
+            }
+          } else {
+            tp.x -= tp.dir * 40 * dt;
+            if (Math.abs(tp.x - tp.sx) > 50) tp.gone = true;
+          }
+        }
+        for (let i = shots.length - 1; i >= 0; i--) {
+          const s = shots[i]; s.vy += s.g * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.left -= dt;
+          if (s.kind === "rocket" && R() < 0.6) puffs.push({ x: s.x - Math.sign(s.vx), y: s.y, life: 0.45 });
+          if (s.left <= 0) { kit.impact(s.tx, s.ty, s.blast, t); shots.splice(i, 1); }
+        }
+        for (let i = puffs.length - 1; i >= 0; i--) { puffs[i].life -= dt; puffs[i].y -= dt * 1.5; if (puffs[i].life <= 0) puffs.splice(i, 1); }
+        // Out of time or out of targets: whatever is left falls apart, and the squad runs for it.
+        if (retreat < 0 && !shots.length && t > MARCH && (kit.alive <= 0 || t >= CEASE)) { kit.collapse(t); retreat = t; }
+        const pieces = kit.step(dt, t);
+        return retreat >= 0 && !pieces && !puffs.length && kit.boomsDone(t) && troops.every(tp => tp.gone);
+      },
+    };
+  },
+
+  // Super-secret: one soldier steps right up to the screen, stares at you, and calls in an airstrike.
+  // A jet passes over, everything goes quiet for a moment, then artillery rains down on the art.
+  airstrike(chs) {
+    const SOLDIER = mix(ACC, WHITE, 0.15), TALK = mix(ACC, WHITE, 0.6), SHELL = mix(ACC, WHITE, 0.4 + 0.3 * FL), JETC = mix(ACC, WHITE, 0.45);
+    const FACE = [
+      "      _______      ",
+      "    /_________\\    ",
+      "     |       |     ",
+      "     |   ^   |     ",
+      "     |       |     ",
+      "      \\_____/      ",
+      "   ______| |______ ",
+      "  /     [###]     \\",
+      " /   |   |#|   |   \\",
+      "/    |   |#|   |    \\",
+    ];
+    const JET = [
+      "         __            ",
+      "  ______/  \\_______    ",
+      " <__________________)=~",
+      "        \\__/           ",
+    ];
+    const SHELLS = 46, kit = blastKit(chs, SHELLS * 1.8 * 1.8 * 0.55);  // big blasts, many landing on cleared ground
+    const fx = Math.round(cols / 2 - FACE[0].length / 2), bottom = rows - 1;
+    const T_UP = 1.0, T_JET = 7.0, T_RAIN = 9.6, RAIN_LEN = 3.0;
+    const shells = [], trail = [];
+    let t = 0, fired = 0, done0 = -1;
+    const lineAt = (e, text, k) => {                                      // speech above his helmet
+      const n = Math.floor(text.length * clamp(k)), y = Math.max(0, bottom - FACE.length - 1);
+      const x0 = Math.round(clamp(cols / 2 - text.length / 2, 1, cols - text.length - 1));
+      for (let i = 0; i < n; i++) if (text[i] !== " ") e(x0 + i, y, text[i], TALK, 1);
+    };
+    const say = (e, text, start, len) => { if (t >= start && t < start + len) lineAt(e, text, (t - start) / Math.min(1, len * 0.4)); };
+    return {
+      over(e) {
+        // The close-up soldier: rises into view, stares, radios it in, ducks back down.
+        if (t < T_JET) {
+          const rise = t < T_UP ? 1 - easeOut(t / T_UP) : t > 6.2 ? (t - 6.2) / 0.8 : 0, dy = Math.round(rise * (FACE.length + 1));
+          const blink = (t > 1.9 && t < 2.05) || (t > 4.6 && t < 4.72), talking = (t > 3.0 && t < 4.4) || (t > 4.8 && t < 5.9);
+          const radio = t > 2.7 && t < 6.2;
+          FACE.forEach((r, j) => {
+            let row = r;
+            if (j === 2) row = blink ? "     | -   - |     " : "     | O   O |     ";   // staring right at you
+            if (j === 4) row = talking && Math.floor(t / 0.12) % 2 ? "     |  (_)  |     " : "     |  ---  |     ";
+            for (let i = 0; i < row.length; i++) if (row[i] !== " ") e(fx + i, bottom - FACE.length + 1 + j + dy, row[i], SOLDIER, 1);
+          });
+          if (radio) [[16, 1, "|"], [15, 2, "["], [16, 2, "#"], [17, 2, "]"], [15, 3, "["], [16, 3, "#"], [17, 3, "]"], [14, 4, "_"], [15, 4, "/"]]
+            .forEach(([i, j, ch]) => e(fx + i, bottom - FACE.length + 1 + j + dy, ch, SOLDIER, 1));
+          say(e, "...", 1.1, 1.4);
+          say(e, "Command, this is Viper. I'm being watched.", 2.9, 1.7);
+          say(e, "Requesting airstrike. On the wallpaper.", 4.7, 1.5);
+        }
+        // The jet streaks across the top of the screen, leaving a contrail.
+        for (const p of trail) e(Math.round(p.x), p.y, p.life > 0.6 ? "~" : "-", kit.SMOKE, clamp(p.life));
+        if (t >= T_JET && t < T_JET + 1.4) {
+          const jx = Math.round(lerp(cols + 2, -JET[0].length - 2, (t - T_JET) / 1.4));
+          JET.forEach((r, j) => { for (let i = 0; i < r.length; i++) if (r[i] !== " ") e(jx + i, 1 + j, r[i], JETC, 1); });
+        }
+        for (const s of shells) { e(Math.round(s.x), Math.round(s.y) - 1, "|", SHELL, 0.5); e(Math.round(s.x), Math.round(s.y), "V", SHELL, 1); }
+        kit.drawBooms(e, t);
+      },
+      update(dt) {
+        t += dt;
+        if (t >= T_JET && t < T_JET + 1.4) {
+          const jx = lerp(cols + 2, -JET[0].length - 2, (t - T_JET) / 1.4) + JET[0].length;
+          trail.push({ x: jx, y: 3, life: 1.6 });
+        }
+        for (let i = trail.length - 1; i >= 0; i--) { trail[i].life -= dt; if (trail[i].life <= 0) trail.splice(i, 1); }
+        // After a long, quiet pause: the rain. Shells drop faster and faster onto the art.
+        if (t >= T_RAIN && fired < SHELLS && kit.alive > 0) {
+          const due = Math.floor(SHELLS * Math.pow(clamp((t - T_RAIN) / RAIN_LEN), 1.4));
+          while (fired < due) {
+            const c = kit.target(); if (!c) break;
+            shells.push({ x: c.tx + (R() - 0.5) * 2, y: -2 - R() * 4, tx: c.tx, ty: c.ty, v: 45 + R() * 15 });
+            fired++;
+          }
+        }
+        for (let i = shells.length - 1; i >= 0; i--) {
+          const s = shells[i]; s.y += s.v * dt; s.x = lerp(s.x, s.tx, Math.min(1, dt * 4));
+          if (s.y >= s.ty) { kit.impact(s.tx, s.ty, 1.8, t); shells.splice(i, 1); }
+        }
+        if (done0 < 0 && t >= T_RAIN && !shells.length && (fired >= SHELLS || kit.alive <= 0)) { kit.collapse(t); done0 = t; }
+        const pieces = kit.step(dt, t);
+        return done0 >= 0 && !pieces && kit.boomsDone(t) && !trail.length;
+      },
+    };
+  },
   dissolve(chs) {
     const SEQ = ["▓", "▒", "░"];
     chs.forEach(c => { c.d = R() * 1.0; c.c0 = c.c.slice(); });
@@ -1407,7 +1770,12 @@ function beginShine() {
   wake();
 }
 function afterShine() { phase = "hold2"; cur = null; chars.forEach(c => cp(c.c, c.fc)); render(); sleepFor(Math.max(500, holdSecs() * 500 - 1600), beginOut); flowWhileHolding(); }
-function beginOut() { const ex = EXITS[pick(exitNames())]; measure(ex); cur = ex(chars); phase = "out"; wake(); }
+let sendTroops = false;
+function beginOut() {
+  const name = sendTroops || R() < 0.05 ? "soldiers" : pick(exitNames());    // the squad turns up about once in 20 exits
+  sendTroops = false;
+  const ex = EXITS[name]; measure(ex); cur = ex(chars); phase = "out"; wake();
+}
 function afterOut() { phase = "gap"; cur = null; chars = []; flash = 0; render(); sleepFor(600 / SPEED, () => beginIn()); }
 
 function sleepFor(ms, fn) {
@@ -1464,6 +1832,22 @@ async function start() {
 
 window.termwall = {
   next() { gen++; clearTimeout(sleepTimer); pendingWake = null; beginIn(); },
+  // Easter egg: send the squad in now if the art is up, otherwise as soon as it is.
+  // Super-secret: the airstrike instead of the squad.
+  airstrike() { callStrike = true; return this.troops(); },
+  async troops() {
+    sendTroops = true;
+    if (paused) return;                                    // they'll come for the next exit instead
+    const g = ++gen; clearTimeout(sleepTimer); clearInterval(flowTimer); rafOn = false; pendingWake = null;
+    if (!chars.length || phase === "out" || phase === "gap" || phase === "idle") {
+      const a = await getArt(lastWeight || WEIGHTS[0]);
+      if (g !== gen || !a.cells.length) return;
+      art = a.cells; B = a.B; if (LIVE_COLORS) recolor(art); chars = freshChars();
+    }
+    // Whatever was happening, the art snaps into place and the squad arrives.
+    chars.forEach(c => { c.x = c.tx; c.y = c.ty; c.s = c.fin; cp(c.c, c.fc); c.vis = true; c.a = 1; });
+    flash = 0; phase = "hold"; artRegion(); render(); beginOut();
+  },
   play(name) { gen++; clearTimeout(sleepTimer); pendingWake = null; beginIn(name); },
   setPaused(p) {
     paused = !!p;
